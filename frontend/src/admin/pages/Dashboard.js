@@ -1,0 +1,676 @@
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import AdminLayout from '../../admin/components/AdminLayout';
+import '../../admin/styles/dashboard_air.css';
+
+// API
+import { batchAPI, checkApiHealth, getApiBaseUrl } from '../../admin/services/api';
+
+// CHART.JS
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  LineElement,
+  ArcElement,
+  PointElement,
+  Tooltip,
+  Legend,
+  Filler,
+} from 'chart.js';
+
+import { Bar, Line, Pie } from 'react-chartjs-2';
+
+// REGISTER
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  LineElement,
+  ArcElement,
+  PointElement,
+  Tooltip,
+  Legend,
+  Filler
+);
+
+const Dashboard = () => {
+  const navigate = useNavigate();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState(null);
+  const loadDashboard = async () => {
+    setConnectionError(null);
+    setLoading(true);
+    try {
+      const health = await checkApiHealth();
+      if (!health.ok) {
+        setConnectionError(health.message || 'Backend is not responding.');
+        setLoading(false);
+        return;
+      }
+      const res = await batchAPI.get({ include: ['dashboard'] });
+      const dashboardData = res?.data?.dashboard ?? null;
+      if (!dashboardData) {
+        setConnectionError('Dashboard data was not returned. Please try again.');
+        return;
+      }
+      setData(dashboardData);
+    } catch (err) {
+      const msg = err?.message || 'Connection error';
+      const isAuth = err?.status === 401;
+      setConnectionError(
+        isAuth
+          ? 'Session expired or not logged in. Please log in again.'
+          : msg
+      );
+      if (isAuth) {
+        setTimeout(() => navigate('/admin/login'), 2000);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  if (connectionError) {
+    return (
+      <AdminLayout>
+        <div className="dashboard-connection-error">
+          <div className="dashboard-connection-error-card">
+            <h2>Could not load dashboard</h2>
+            <p className="dashboard-connection-error-message">{connectionError}</p>
+            <p className="dashboard-connection-error-hint">
+              Ensure the backend is running: <code>cd back-end && php artisan serve</code>
+              <br />
+              API base: <code>{getApiBaseUrl()}</code>
+            </p>
+            <p className="dashboard-connection-error-hint">
+              If the backend runs on a different host or port, set <code>REACT_APP_API_URL</code> in the frontend <code>.env</code> (see <code>.env.example</code>), then restart the React dev server (<code>npm start</code>).
+            </p>
+            <button type="button" className="dashboard-connection-retry" onClick={loadDashboard}>
+              Retry
+            </button>
+          </div>
+        </div>
+      </AdminLayout>
+    );
+  }
+
+  if (loading || !data) {
+    return (
+      <AdminLayout>
+        <div className="dashboard-loading">
+          <p>Loading dashboard...</p>
+        </div>
+      </AdminLayout>
+    );
+  }
+
+  /* =========================
+     BAR CHART OPTIONS
+  ========================= */
+  const barOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false,
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        padding: 12,
+        borderRadius: 8,
+      },
+    },
+    scales: {
+      x: {
+        grid: {
+          display: false,
+        },
+        ticks: {
+          color: '#6b7280',
+          font: {
+            size: 11,
+          },
+        },
+        barPercentage: 0.5,
+        categoryPercentage: 0.8,
+        offset: true,
+      },
+      y: {
+        grid: {
+          color: '#f3f4f6',
+          drawBorder: false,
+        },
+        ticks: {
+          color: '#6b7280',
+          font: {
+            size: 11,
+          },
+          stepSize: 1,
+        },
+        beginAtZero: true,
+      },
+    },
+    layout: {
+      padding: { left: 8, right: 8 },
+    },
+  };
+
+  /* =========================
+     GROUPED BAR CHART OPTIONS
+  ========================= */
+  const groupedBarOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: true,
+        position: 'bottom',
+        align: 'center',
+        labels: {
+          color: '#6b7280',
+          usePointStyle: true,
+          pointStyle: 'rect',
+          padding: 15,
+          font: {
+            size: 11,
+          },
+        },
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        padding: 12,
+        borderRadius: 8,
+      },
+    },
+    scales: {
+      x: {
+        grid: {
+          display: false,
+        },
+        ticks: {
+          color: '#6b7280',
+          font: {
+            size: 10,
+          },
+        },
+      },
+      y: {
+        grid: {
+          color: '#e5e7eb',
+          drawBorder: false,
+          borderDash: [3, 3],
+        },
+        ticks: {
+          color: '#6b7280',
+          font: {
+            size: 11,
+          },
+        },
+        beginAtZero: true,
+      },
+    },
+  };
+
+  /* =========================
+     PIE CHART OPTIONS
+  ========================= */
+  const pieOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false,
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        padding: 12,
+        borderRadius: 8,
+        callbacks: {
+          label: (ctx) => {
+            const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+            const value = ctx.raw || 0;
+            const percent = total > 0 ? ((value / total) * 100).toFixed(0) : '0';
+            return `${ctx.label}: ${percent}%`;
+          },
+        },
+      },
+    },
+  };
+
+  /* =========================
+     LINE CHART OPTIONS
+  ========================= */
+  const lineOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: true,
+        position: 'bottom',
+        align: 'center',
+        labels: {
+          color: '#6b7280',
+          usePointStyle: true,
+          pointStyle: 'circle',
+          padding: 15,
+          font: {
+            size: 11,
+          },
+        },
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        padding: 12,
+        borderRadius: 8,
+      },
+    },
+    scales: {
+      x: {
+        grid: {
+          color: '#f3f4f6',
+          drawBorder: false,
+        },
+        ticks: {
+          color: '#6b7280',
+          font: {
+            size: 11,
+          },
+        },
+      },
+      y: {
+        grid: {
+          color: '#f3f4f6',
+          drawBorder: false,
+        },
+        ticks: {
+          color: '#6b7280',
+          font: {
+            size: 11,
+          },
+          stepSize: 45,
+        },
+        beginAtZero: true,
+      },
+    },
+    interaction: {
+      intersect: false,
+      mode: 'index',
+    },
+  };
+
+  const stats = data?.stats ?? {};
+  const pendingActions = stats.pending_actions ?? 0;
+
+  // Safe fallbacks for all chart data — prevents crashes when API omits fields
+  const inventoryByCategory = data?.inventory_by_category ?? { labels: [], values: [] };
+  const branchDistribution  = data?.branch_distribution  ?? { labels: [], values: [] };
+  const warehouseCapacity   = data?.warehouse_capacity   ?? { labels: [], capacity: [], occupancy: [] };
+  const stockTrends         = data?.stock_trends         ?? { labels: [], values: [] };
+  const transactionTrends   = data?.transaction_trends   ?? { labels: [], values: [] };
+
+  return (
+    <AdminLayout>
+      {/* HEADER */}
+      <div className="dashboard-header">
+        <h1>System Dashboard</h1>
+        <p>System-wide statistics and overall health monitoring.</p>
+      </div>
+
+      {/* STATS */}
+      <div className="stats-container">
+        <div className="stat-card">
+          <div className="stat-icon purple">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+          </div>
+          <div className="stat-content">
+            <h4>Total Users</h4>
+            <h2>{stats.total_users ?? 0}</h2>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+              <polyline points="9 22 9 12 15 12 15 22"></polyline>
+            </svg>
+          </div>
+          <div className="stat-content">
+            <h4>Active Branches</h4>
+            <h2>{stats.active_branches ?? 0}</h2>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon blue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            </svg>
+          </div>
+          <div className="stat-content">
+            <h4>Total Products</h4>
+            <h2>{stats.total_items ?? 0}</h2>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon orange">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+            </svg>
+          </div>
+          <div className="stat-content">
+            <h4>Pending Actions</h4>
+            <h2>{pendingActions}</h2>
+          </div>
+        </div>
+      </div>
+
+      {/* APPROVAL ALERT PANEL */}
+      <div className="approval-alert-panel">
+        <div className="approval-alert-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <path d="M9 12l2 2 4-4"></path>
+          </svg>
+        </div>
+        <div className="approval-alert-content">
+          <h3>Pending Approvals Queue</h3>
+          <p>There are {pendingActions} items awaiting your authorization.</p>
+        </div>
+        <button type="button" className="approval-alert-btn" onClick={() => navigate('/admin/approval-queue')}>
+          GO TO APPROVALS
+        </button>
+      </div>
+
+      {/* ENTERPRISE QUICK ACTIONS */}
+      <div className="quick-actions-section">
+        <div className="quick-actions-header">
+          <div>
+            <h3 className="quick-actions-title">ENTERPRISE QUICK ACTIONS</h3>
+            <p className="quick-actions-subtitle">Direct access to newly integrated system modules.</p>
+          </div>
+          <button type="button" className="quick-actions-view-all" onClick={() => navigate('/admin/config')}>
+            VIEW ALL INTEGRATIONS &gt;
+          </button>
+        </div>
+        <div className="quick-actions-grid">
+          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/users')}>
+            <span className="quick-action-icon quick-action-icon-red">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+              </svg>
+            </span>
+            <span className="quick-action-label">CREATE USER</span>
+          </button>
+          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/branches')}>
+            <span className="quick-action-icon quick-action-icon-yellow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                <polyline points="9 22 9 12 15 12 15 22"></polyline>
+              </svg>
+            </span>
+            <span className="quick-action-label">NEW BRANCH</span>
+          </button>
+          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/warehouses')}>
+            <span className="quick-action-icon quick-action-icon-blue">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+              </svg>
+            </span>
+            <span className="quick-action-label">WAREHOUSE</span>
+          </button>
+          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/customers')}>
+            <span className="quick-action-icon quick-action-icon-green">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+            </span>
+            <span className="quick-action-label">CUSTOMER</span>
+          </button>
+          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/warranty')}>
+            <span className="quick-action-icon quick-action-icon-purple">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+            </span>
+            <span className="quick-action-label">CLAIM</span>
+          </button>
+          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/inventory')}>
+            <span className="quick-action-icon quick-action-icon-grey">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+            </span>
+            <span className="quick-action-label">TRANSFERS</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ROW 1 */}
+      <div className="charts-section">
+        <div className="chart-card">
+          <h3>Inventory by Category</h3>
+          <div className="chart-wrapper">
+            <Bar
+              data={{
+                labels: inventoryByCategory.labels,
+                datasets: [
+                  {
+                    data: inventoryByCategory.values,
+                    backgroundColor: '#DC2626',
+                    borderRadius: 6,
+                    maxBarThickness: 72,
+                  },
+                ],
+              }}
+              options={barOptions}
+            />
+          </div>
+        </div>
+
+        <div className="chart-card">
+          <h3>Branch Distribution</h3>
+          <div className="chart-wrapper pie-wrapper">
+            {(() => {
+              const labels = branchDistribution.labels;
+              const values = branchDistribution.values;
+              const total = values.reduce((a, b) => a + b, 0);
+              const branchColors = ['#DC2626', '#3B82F6', '#10B981', '#F59E0B', '#EC4899', '#8B5CF6', '#06B6D4', '#84CC16', '#F97316', '#6366F1'];
+              const sliceColors = labels.map((_, i) => branchColors[i % branchColors.length]);
+              return (
+                <>
+                  <Pie
+                    data={{
+                      labels,
+                      datasets: [
+                        {
+                          data: values,
+                          backgroundColor: sliceColors,
+                          borderColor: '#ffffff',
+                          borderWidth: 2,
+                        },
+                      ],
+                    }}
+                    options={pieOptions}
+                  />
+                  <div className="pie-legend">
+                    {labels.map((label, idx) => {
+                      const value = values[idx] || 0;
+                      const percent = total > 0 ? ((value / total) * 100).toFixed(0) : '0';
+                      return (
+                        <div key={idx} className="legend-item">
+                          <span className="legend-dot" style={{ backgroundColor: sliceColors[idx] }}></span>
+                          <span className="legend-text">{label}: {percent}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
+
+      {/* ROW 2 - NEW CHARTS */}
+      <div className="charts-section">
+        {/* STOCK STATUS BY BRANCH */}
+        <div className="chart-card">
+          <h3>Stock Status by Branch</h3>
+          <div className="chart-wrapper">
+            <Bar
+              data={{
+                labels: ['CDO - Gusa', 'CDO - Carmen'],
+                datasets: [
+                  {
+                    label: 'In Stock',
+                    data: [5, 3],
+                    backgroundColor: '#DC2626',
+                    borderRadius: 4,
+                    barThickness: 50,
+                  },
+                  {
+                    label: 'Low Stock',
+                    data: [1, 2],
+                    backgroundColor: '#F59E0B',
+                    borderRadius: 4,
+                    barThickness: 50,
+                  },
+                ],
+              }}
+              options={groupedBarOptions}
+            />
+          </div>
+        </div>
+
+        {/* WAREHOUSE CAPACITY */}
+        <div className="chart-card">
+          <h3>Warehouse Capacity</h3>
+          <div className="chart-wrapper">
+            <Bar
+              data={{
+                labels: warehouseCapacity.labels,
+                datasets: [
+                  {
+                    label: 'Capacity',
+                    data: warehouseCapacity.capacity,
+                    backgroundColor: '#D1D5DB',
+                    borderRadius: 4,
+                    barThickness: 80,
+                  },
+                  {
+                    label: 'Occupancy',
+                    data: warehouseCapacity.occupancy,
+                    backgroundColor: '#DC2626',
+                    borderRadius: 4,
+                    barThickness: 80,
+                  },
+                ],
+              }}
+              options={groupedBarOptions}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ROW 3 */}
+      <div className="charts-section">
+        <div className="chart-card">
+          <h3>Stock Level Trends</h3>
+          <div className="chart-wrapper">
+            <Line
+              data={{
+                labels: stockTrends.labels,
+                datasets: [
+                  {
+                    label: 'reorder-level',
+                    data: stockTrends.labels.map(() => 140),
+                    borderColor: '#F59E0B',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    borderDash: [8, 4],
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                  },
+                  {
+                    label: 'stock',
+                    data: stockTrends.values,
+                    borderColor: '#DC2626',
+                    backgroundColor: 'rgba(220, 38, 38, 0.1)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    pointBackgroundColor: '#DC2626',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 2,
+                  },
+                ],
+              }}
+              options={lineOptions}
+            />
+          </div>
+        </div>
+
+        <div className="chart-card">
+          <h3>Transaction Trends</h3>
+          <div className="chart-wrapper">
+            <Line
+              data={{
+                labels: transactionTrends.labels,
+                datasets: [
+                  {
+                    label: 'purchase',
+                    data: transactionTrends.values.map((v) => v * 0.6),
+                    borderColor: '#F59E0B',
+                    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                  },
+                  {
+                    label: 'sales',
+                    data: transactionTrends.values,
+                    borderColor: '#DC2626',
+                    backgroundColor: 'rgba(220, 38, 38, 0.2)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                  },
+                ],
+              }}
+              options={lineOptions}
+            />
+          </div>
+        </div>
+      </div>
+    </AdminLayout>
+  );
+};
+
+export default Dashboard;
+
+
+
