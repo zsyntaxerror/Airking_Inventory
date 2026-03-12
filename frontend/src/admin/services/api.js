@@ -130,6 +130,13 @@ export const authAPI = {
     removeToken();
   },
 
+  forgotPassword: async (username, email) => {
+    return apiRequest('/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ username, email }),
+    });
+  },
+
   getUser: async () => apiRequest('/user'),
 };
 

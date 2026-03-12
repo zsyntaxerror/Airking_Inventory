@@ -83,10 +83,10 @@ const Login = () => {
                   <input type="checkbox" id="remember" />
                   <label htmlFor="remember">Remember me</label>
                 </div>
-                <button 
-                  type="button" 
-                  className="forgot" 
-                  onClick={() => toast.info('Forgot password is not implemented yet.')}
+                <button
+                  type="button"
+                  className="forgot"
+                  onClick={() => navigate('/admin/forgot-password')}
                 >
                   Forgot Password?
                 </button>

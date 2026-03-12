@@ -8,6 +8,7 @@ use App\Models\AuditTrail;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
@@ -144,6 +145,49 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $token,
+        ]);
+    }
+
+    /**
+     * Forgot password - generate a temporary password for the user.
+     * This is a simple, API-driven flow for internal systems where email
+     * delivery is not set up.
+     */
+    public function forgotPassword(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => 'required|string',
+            'email'    => 'required|email',
+        ]);
+
+        $user = User::where('username', $validated['username'])
+            ->where('email', $validated['email'])
+            ->first();
+
+        if (! $user) {
+            throw ValidationException::withMessages([
+                'username' => ['We could not find a matching account.'],
+            ]);
+        }
+
+        // Generate a new temporary password
+        $temporaryPassword = Str::random(10);
+        $user->password_hash = Hash::make($temporaryPassword);
+        $user->save();
+
+        // Log password reset
+        AuditTrail::create([
+            'user_id'    => $user->user_id,
+            'action'     => 'password_reset',
+            'table_name' => 'users',
+            'record_id'  => $user->user_id,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+        ]);
+
+        return response()->json([
+            'message'            => 'Password has been reset. Use the temporary password to log in and then change it.',
+            'temporary_password' => $temporaryPassword,
         ]);
     }
 }

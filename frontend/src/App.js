@@ -5,6 +5,7 @@ import './App.css';
 
 // Core
 const Login = lazy(() => import('./admin/pages/Login'));
+const ForgotPassword = lazy(() => import('./admin/pages/ForgotPassword'));
 const Dashboard = lazy(() => import('./admin/pages/Dashboard'));
 
 // System Setup
@@ -57,6 +58,7 @@ function App() {
           <Route path="/" element={<Navigate to="/admin/login" replace />} />
           <Route path="/admin" element={<Navigate to="/admin/login" replace />} />
           <Route path="/admin/login" element={<Login />} />
+          <Route path="/admin/forgot-password" element={<ForgotPassword />} />
 
           {/* Dashboard */}
           <Route path="/admin/dashboard" element={<Dashboard />} />

@@ -1,7 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AdminLayout from '../../admin/components/AdminLayout';
+import { useAuth } from '../../admin/context/AuthContext';
+import { getRoleKey, ROLES } from '../../admin/utils/roles';
 import '../../admin/styles/dashboard_air.css';
+
+// Role-specific dashboards (lazy-loaded)
+const InventoryAnalystDashboard = lazy(() => import('./InventoryAnalystDashboard'));
+const AuditorDashboard = lazy(() => import('./AuditorDashboard'));
+const BranchManagerDashboard = lazy(() => import('./BranchManagerDashboard'));
+const WarehousePersonnelDashboard = lazy(() => import('./WarehousePersonnelDashboard'));
 
 // API
 import { batchAPI, checkApiHealth, getApiBaseUrl } from '../../admin/services/api';
@@ -35,11 +43,15 @@ ChartJS.register(
   Filler
 );
 
-const Dashboard = () => {
+/* ─────────────────────────────────────────────
+   Admin-only dashboard (hooks always called)
+───────────────────────────────────────────── */
+const AdminDashboard = () => {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState(null);
+
   const loadDashboard = async () => {
     setConnectionError(null);
     setLoading(true);
@@ -111,132 +123,42 @@ const Dashboard = () => {
     );
   }
 
-  /* =========================
-     BAR CHART OPTIONS
-  ========================= */
+  /* ── Chart options ── */
   const barOptions = {
     responsive: true,
     maintainAspectRatio: false,
-    plugins: {
-      legend: {
-        display: false,
-      },
-      tooltip: {
-        backgroundColor: '#1f2937',
-        padding: 12,
-        borderRadius: 8,
-      },
-    },
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1f2937', padding: 12, borderRadius: 8 } },
     scales: {
-      x: {
-        grid: {
-          display: false,
-        },
-        ticks: {
-          color: '#6b7280',
-          font: {
-            size: 11,
-          },
-        },
-        barPercentage: 0.5,
-        categoryPercentage: 0.8,
-        offset: true,
-      },
-      y: {
-        grid: {
-          color: '#f3f4f6',
-          drawBorder: false,
-        },
-        ticks: {
-          color: '#6b7280',
-          font: {
-            size: 11,
-          },
-          stepSize: 1,
-        },
-        beginAtZero: true,
-      },
+      x: { grid: { display: false }, ticks: { color: '#6b7280', font: { size: 11 } }, barPercentage: 0.5, categoryPercentage: 0.8, offset: true },
+      y: { grid: { color: '#f3f4f6', drawBorder: false }, ticks: { color: '#6b7280', font: { size: 11 }, stepSize: 1 }, beginAtZero: true },
     },
-    layout: {
-      padding: { left: 8, right: 8 },
-    },
+    layout: { padding: { left: 8, right: 8 } },
   };
 
-  /* =========================
-     GROUPED BAR CHART OPTIONS
-  ========================= */
   const groupedBarOptions = {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: {
-        display: true,
-        position: 'bottom',
-        align: 'center',
-        labels: {
-          color: '#6b7280',
-          usePointStyle: true,
-          pointStyle: 'rect',
-          padding: 15,
-          font: {
-            size: 11,
-          },
-        },
-      },
-      tooltip: {
-        backgroundColor: '#1f2937',
-        padding: 12,
-        borderRadius: 8,
-      },
+      legend: { display: true, position: 'bottom', align: 'center', labels: { color: '#6b7280', usePointStyle: true, pointStyle: 'rect', padding: 15, font: { size: 11 } } },
+      tooltip: { backgroundColor: '#1f2937', padding: 12, borderRadius: 8 },
     },
     scales: {
-      x: {
-        grid: {
-          display: false,
-        },
-        ticks: {
-          color: '#6b7280',
-          font: {
-            size: 10,
-          },
-        },
-      },
-      y: {
-        grid: {
-          color: '#e5e7eb',
-          drawBorder: false,
-          borderDash: [3, 3],
-        },
-        ticks: {
-          color: '#6b7280',
-          font: {
-            size: 11,
-          },
-        },
-        beginAtZero: true,
-      },
+      x: { grid: { display: false }, ticks: { color: '#6b7280', font: { size: 10 } } },
+      y: { grid: { color: '#e5e7eb', drawBorder: false, borderDash: [3, 3] }, ticks: { color: '#6b7280', font: { size: 11 } }, beginAtZero: true },
     },
   };
 
-  /* =========================
-     PIE CHART OPTIONS
-  ========================= */
   const pieOptions = {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: {
-        display: false,
-      },
+      legend: { display: false },
       tooltip: {
-        backgroundColor: '#1f2937',
-        padding: 12,
-        borderRadius: 8,
+        backgroundColor: '#1f2937', padding: 12, borderRadius: 8,
         callbacks: {
           label: (ctx) => {
             const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
-            const value = ctx.raw || 0;
-            const percent = total > 0 ? ((value / total) * 100).toFixed(0) : '0';
+            const percent = total > 0 ? ((ctx.raw / total) * 100).toFixed(0) : '0';
             return `${ctx.label}: ${percent}%`;
           },
         },
@@ -244,76 +166,29 @@ const Dashboard = () => {
     },
   };
 
-  /* =========================
-     LINE CHART OPTIONS
-  ========================= */
   const lineOptions = {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: {
-        display: true,
-        position: 'bottom',
-        align: 'center',
-        labels: {
-          color: '#6b7280',
-          usePointStyle: true,
-          pointStyle: 'circle',
-          padding: 15,
-          font: {
-            size: 11,
-          },
-        },
-      },
-      tooltip: {
-        backgroundColor: '#1f2937',
-        padding: 12,
-        borderRadius: 8,
-      },
+      legend: { display: true, position: 'bottom', align: 'center', labels: { color: '#6b7280', usePointStyle: true, pointStyle: 'circle', padding: 15, font: { size: 11 } } },
+      tooltip: { backgroundColor: '#1f2937', padding: 12, borderRadius: 8 },
     },
     scales: {
-      x: {
-        grid: {
-          color: '#f3f4f6',
-          drawBorder: false,
-        },
-        ticks: {
-          color: '#6b7280',
-          font: {
-            size: 11,
-          },
-        },
-      },
-      y: {
-        grid: {
-          color: '#f3f4f6',
-          drawBorder: false,
-        },
-        ticks: {
-          color: '#6b7280',
-          font: {
-            size: 11,
-          },
-          stepSize: 45,
-        },
-        beginAtZero: true,
-      },
+      x: { grid: { color: '#f3f4f6', drawBorder: false }, ticks: { color: '#6b7280', font: { size: 11 } } },
+      y: { grid: { color: '#f3f4f6', drawBorder: false }, ticks: { color: '#6b7280', font: { size: 11 }, stepSize: 45 }, beginAtZero: true },
     },
-    interaction: {
-      intersect: false,
-      mode: 'index',
-    },
+    interaction: { intersect: false, mode: 'index' },
   };
 
   const stats = data?.stats ?? {};
   const pendingActions = stats.pending_actions ?? 0;
-
-  // Safe fallbacks for all chart data — prevents crashes when API omits fields
   const inventoryByCategory = data?.inventory_by_category ?? { labels: [], values: [] };
   const branchDistribution  = data?.branch_distribution  ?? { labels: [], values: [] };
   const warehouseCapacity   = data?.warehouse_capacity   ?? { labels: [], capacity: [], occupancy: [] };
   const stockTrends         = data?.stock_trends         ?? { labels: [], values: [] };
   const transactionTrends   = data?.transaction_trends   ?? { labels: [], values: [] };
+
+  const branchColors = ['#DC2626','#3B82F6','#10B981','#F59E0B','#EC4899','#8B5CF6','#06B6D4','#84CC16','#F97316','#6366F1'];
 
   return (
     <AdminLayout>
@@ -334,12 +209,8 @@ const Dashboard = () => {
               <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
             </svg>
           </div>
-          <div className="stat-content">
-            <h4>Total Users</h4>
-            <h2>{stats.total_users ?? 0}</h2>
-          </div>
+          <div className="stat-content"><h4>Total Users</h4><h2>{stats.total_users ?? 0}</h2></div>
         </div>
-
         <div className="stat-card">
           <div className="stat-icon green">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -347,24 +218,16 @@ const Dashboard = () => {
               <polyline points="9 22 9 12 15 12 15 22"></polyline>
             </svg>
           </div>
-          <div className="stat-content">
-            <h4>Active Branches</h4>
-            <h2>{stats.active_branches ?? 0}</h2>
-          </div>
+          <div className="stat-content"><h4>Active Branches</h4><h2>{stats.active_branches ?? 0}</h2></div>
         </div>
-
         <div className="stat-card">
           <div className="stat-icon blue">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
             </svg>
           </div>
-          <div className="stat-content">
-            <h4>Total Products</h4>
-            <h2>{stats.total_items ?? 0}</h2>
-          </div>
+          <div className="stat-content"><h4>Total Products</h4><h2>{stats.total_items ?? 0}</h2></div>
         </div>
-
         <div className="stat-card">
           <div className="stat-icon orange">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -372,10 +235,7 @@ const Dashboard = () => {
               <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
             </svg>
           </div>
-          <div className="stat-content">
-            <h4>Pending Actions</h4>
-            <h2>{pendingActions}</h2>
-          </div>
+          <div className="stat-content"><h4>Pending Actions</h4><h2>{pendingActions}</h2></div>
         </div>
       </div>
 
@@ -408,86 +268,32 @@ const Dashboard = () => {
           </button>
         </div>
         <div className="quick-actions-grid">
-          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/users')}>
-            <span className="quick-action-icon quick-action-icon-red">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                <circle cx="9" cy="7" r="4"></circle>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-              </svg>
-            </span>
-            <span className="quick-action-label">CREATE USER</span>
-          </button>
-          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/branches')}>
-            <span className="quick-action-icon quick-action-icon-yellow">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                <polyline points="9 22 9 12 15 12 15 22"></polyline>
-              </svg>
-            </span>
-            <span className="quick-action-label">NEW BRANCH</span>
-          </button>
-          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/warehouses')}>
-            <span className="quick-action-icon quick-action-icon-blue">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-              </svg>
-            </span>
-            <span className="quick-action-label">WAREHOUSE</span>
-          </button>
-          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/customers')}>
-            <span className="quick-action-icon quick-action-icon-green">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-              </svg>
-            </span>
-            <span className="quick-action-label">CUSTOMER</span>
-          </button>
-          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/warranty')}>
-            <span className="quick-action-icon quick-action-icon-purple">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-              </svg>
-            </span>
-            <span className="quick-action-label">CLAIM</span>
-          </button>
-          <button type="button" className="quick-action-card" onClick={() => navigate('/admin/inventory')}>
-            <span className="quick-action-icon quick-action-icon-grey">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points="23 4 23 10 17 10"></polyline>
-                <polyline points="1 20 1 14 7 14"></polyline>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-              </svg>
-            </span>
-            <span className="quick-action-label">TRANSFERS</span>
-          </button>
+          {[
+            { label: 'CREATE USER', path: '/admin/users', cls: 'red', icon: <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></> },
+            { label: 'NEW BRANCH', path: '/admin/branches', cls: 'yellow', icon: <><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></> },
+            { label: 'WAREHOUSE', path: '/admin/warehouses', cls: 'blue', icon: <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/> },
+            { label: 'CUSTOMER', path: '/admin/customers', cls: 'green', icon: <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></> },
+            { label: 'CLAIM', path: '/admin/warranty', cls: 'purple', icon: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/> },
+            { label: 'TRANSFERS', path: '/admin/inventory', cls: 'grey', icon: <><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></> },
+          ].map(({ label, path, cls, icon }) => (
+            <button key={label} type="button" className="quick-action-card" onClick={() => navigate(path)}>
+              <span className={`quick-action-icon quick-action-icon-${cls}`}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">{icon}</svg>
+              </span>
+              <span className="quick-action-label">{label}</span>
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* ROW 1 */}
+      {/* CHARTS ROW 1 */}
       <div className="charts-section">
         <div className="chart-card">
           <h3>Inventory by Category</h3>
           <div className="chart-wrapper">
-            <Bar
-              data={{
-                labels: inventoryByCategory.labels,
-                datasets: [
-                  {
-                    data: inventoryByCategory.values,
-                    backgroundColor: '#DC2626',
-                    borderRadius: 6,
-                    maxBarThickness: 72,
-                  },
-                ],
-              }}
-              options={barOptions}
-            />
+            <Bar data={{ labels: inventoryByCategory.labels, datasets: [{ data: inventoryByCategory.values, backgroundColor: '#DC2626', borderRadius: 6, maxBarThickness: 72 }] }} options={barOptions} />
           </div>
         </div>
-
         <div className="chart-card">
           <h3>Branch Distribution</h3>
           <div className="chart-wrapper pie-wrapper">
@@ -495,28 +301,13 @@ const Dashboard = () => {
               const labels = branchDistribution.labels;
               const values = branchDistribution.values;
               const total = values.reduce((a, b) => a + b, 0);
-              const branchColors = ['#DC2626', '#3B82F6', '#10B981', '#F59E0B', '#EC4899', '#8B5CF6', '#06B6D4', '#84CC16', '#F97316', '#6366F1'];
               const sliceColors = labels.map((_, i) => branchColors[i % branchColors.length]);
               return (
                 <>
-                  <Pie
-                    data={{
-                      labels,
-                      datasets: [
-                        {
-                          data: values,
-                          backgroundColor: sliceColors,
-                          borderColor: '#ffffff',
-                          borderWidth: 2,
-                        },
-                      ],
-                    }}
-                    options={pieOptions}
-                  />
+                  <Pie data={{ labels, datasets: [{ data: values, backgroundColor: sliceColors, borderColor: '#ffffff', borderWidth: 2 }] }} options={pieOptions} />
                   <div className="pie-legend">
                     {labels.map((label, idx) => {
-                      const value = values[idx] || 0;
-                      const percent = total > 0 ? ((value / total) * 100).toFixed(0) : '0';
+                      const percent = total > 0 ? (((values[idx] || 0) / total) * 100).toFixed(0) : '0';
                       return (
                         <div key={idx} className="legend-item">
                           <span className="legend-dot" style={{ backgroundColor: sliceColors[idx] }}></span>
@@ -532,137 +323,34 @@ const Dashboard = () => {
         </div>
       </div>
 
-      {/* ROW 2 - NEW CHARTS */}
+      {/* CHARTS ROW 2 */}
       <div className="charts-section">
-        {/* STOCK STATUS BY BRANCH */}
         <div className="chart-card">
           <h3>Stock Status by Branch</h3>
           <div className="chart-wrapper">
-            <Bar
-              data={{
-                labels: ['CDO - Gusa', 'CDO - Carmen'],
-                datasets: [
-                  {
-                    label: 'In Stock',
-                    data: [5, 3],
-                    backgroundColor: '#DC2626',
-                    borderRadius: 4,
-                    barThickness: 50,
-                  },
-                  {
-                    label: 'Low Stock',
-                    data: [1, 2],
-                    backgroundColor: '#F59E0B',
-                    borderRadius: 4,
-                    barThickness: 50,
-                  },
-                ],
-              }}
-              options={groupedBarOptions}
-            />
+            <Bar data={{ labels: ['CDO - Gusa', 'CDO - Carmen'], datasets: [{ label: 'In Stock', data: [5, 3], backgroundColor: '#DC2626', borderRadius: 4, barThickness: 50 }, { label: 'Low Stock', data: [1, 2], backgroundColor: '#F59E0B', borderRadius: 4, barThickness: 50 }] }} options={groupedBarOptions} />
           </div>
         </div>
-
-        {/* WAREHOUSE CAPACITY */}
         <div className="chart-card">
           <h3>Warehouse Capacity</h3>
           <div className="chart-wrapper">
-            <Bar
-              data={{
-                labels: warehouseCapacity.labels,
-                datasets: [
-                  {
-                    label: 'Capacity',
-                    data: warehouseCapacity.capacity,
-                    backgroundColor: '#D1D5DB',
-                    borderRadius: 4,
-                    barThickness: 80,
-                  },
-                  {
-                    label: 'Occupancy',
-                    data: warehouseCapacity.occupancy,
-                    backgroundColor: '#DC2626',
-                    borderRadius: 4,
-                    barThickness: 80,
-                  },
-                ],
-              }}
-              options={groupedBarOptions}
-            />
+            <Bar data={{ labels: warehouseCapacity.labels, datasets: [{ label: 'Capacity', data: warehouseCapacity.capacity, backgroundColor: '#D1D5DB', borderRadius: 4, barThickness: 80 }, { label: 'Occupancy', data: warehouseCapacity.occupancy, backgroundColor: '#DC2626', borderRadius: 4, barThickness: 80 }] }} options={groupedBarOptions} />
           </div>
         </div>
       </div>
 
-      {/* ROW 3 */}
+      {/* CHARTS ROW 3 */}
       <div className="charts-section">
         <div className="chart-card">
           <h3>Stock Level Trends</h3>
           <div className="chart-wrapper">
-            <Line
-              data={{
-                labels: stockTrends.labels,
-                datasets: [
-                  {
-                    label: 'reorder-level',
-                    data: stockTrends.labels.map(() => 140),
-                    borderColor: '#F59E0B',
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [8, 4],
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                  },
-                  {
-                    label: 'stock',
-                    data: stockTrends.values,
-                    borderColor: '#DC2626',
-                    backgroundColor: 'rgba(220, 38, 38, 0.1)',
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 5,
-                    pointHoverRadius: 7,
-                    pointBackgroundColor: '#DC2626',
-                    pointBorderColor: '#ffffff',
-                    pointBorderWidth: 2,
-                  },
-                ],
-              }}
-              options={lineOptions}
-            />
+            <Line data={{ labels: stockTrends.labels, datasets: [{ label: 'reorder-level', data: stockTrends.labels.map(() => 140), borderColor: '#F59E0B', backgroundColor: 'transparent', borderWidth: 2, borderDash: [8, 4], pointRadius: 0, pointHoverRadius: 0 }, { label: 'stock', data: stockTrends.values, borderColor: '#DC2626', backgroundColor: 'rgba(220,38,38,0.1)', fill: true, tension: 0.4, pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: '#DC2626', pointBorderColor: '#ffffff', pointBorderWidth: 2 }] }} options={lineOptions} />
           </div>
         </div>
-
         <div className="chart-card">
           <h3>Transaction Trends</h3>
           <div className="chart-wrapper">
-            <Line
-              data={{
-                labels: transactionTrends.labels,
-                datasets: [
-                  {
-                    label: 'purchase',
-                    data: transactionTrends.values.map((v) => v * 0.6),
-                    borderColor: '#F59E0B',
-                    backgroundColor: 'rgba(245, 158, 11, 0.2)',
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 0,
-                    pointHoverRadius: 5,
-                  },
-                  {
-                    label: 'sales',
-                    data: transactionTrends.values,
-                    borderColor: '#DC2626',
-                    backgroundColor: 'rgba(220, 38, 38, 0.2)',
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 0,
-                    pointHoverRadius: 5,
-                  },
-                ],
-              }}
-              options={lineOptions}
-            />
+            <Line data={{ labels: transactionTrends.labels, datasets: [{ label: 'purchase', data: transactionTrends.values.map((v) => v * 0.6), borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.2)', fill: true, tension: 0.4, pointRadius: 0, pointHoverRadius: 5 }, { label: 'sales', data: transactionTrends.values, borderColor: '#DC2626', backgroundColor: 'rgba(220,38,38,0.2)', fill: true, tension: 0.4, pointRadius: 0, pointHoverRadius: 5 }] }} options={lineOptions} />
           </div>
         </div>
       </div>
@@ -670,7 +358,30 @@ const Dashboard = () => {
   );
 };
 
+/* ─────────────────────────────────────────────
+   Dashboard — role-based router (no hooks here
+   that would break if called after an early return)
+───────────────────────────────────────────── */
+const ROLE_FALLBACK = <div className="dashboard-loading"><p>Loading...</p></div>;
+
+const Dashboard = () => {
+  const { user: _user } = useAuth();
+  const roleKey = getRoleKey(_user || {});
+
+  if (roleKey === ROLES.INVENTORY_ANALYST) {
+    return <Suspense fallback={ROLE_FALLBACK}><InventoryAnalystDashboard /></Suspense>;
+  }
+  if (roleKey === ROLES.AUDITOR) {
+    return <Suspense fallback={ROLE_FALLBACK}><AuditorDashboard /></Suspense>;
+  }
+  if (roleKey === ROLES.BRANCH_MANAGER) {
+    return <Suspense fallback={ROLE_FALLBACK}><BranchManagerDashboard /></Suspense>;
+  }
+  if (roleKey === ROLES.WAREHOUSE_PERSONNEL) {
+    return <Suspense fallback={ROLE_FALLBACK}><WarehousePersonnelDashboard /></Suspense>;
+  }
+
+  return <AdminDashboard />;
+};
+
 export default Dashboard;
-
-
-

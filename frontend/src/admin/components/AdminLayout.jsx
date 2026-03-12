@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../services/api';
+import { getRoleKey, ROLE_META, ROLE_MENUS, ROLES } from '../utils/roles';
 import '../styles/dashboard_air.css';
 
 // Route-to-chunk prefetch map — mirrors the lazy() imports in App.js
@@ -50,6 +51,11 @@ const AdminLayout = ({ children }) => {
   const location = useLocation();
   const { user: _user, clearSession } = useAuth();
   const user = _user || {};
+
+  // Role-based setup
+  const roleKey = useMemo(() => getRoleKey(user), [user]);
+  const roleMeta = ROLE_META[roleKey] || ROLE_META[ROLES.ADMIN];
+  const roleAccent = roleMeta.accent;
 
   /* profile dropdown */
   const [profileOpen, setProfileOpen] = useState(false);
@@ -135,8 +141,8 @@ const AdminLayout = ({ children }) => {
     navigate('/admin/login');
   };
 
-  // Menu sections — organized to match operational flow (1 branch, 1 warehouse)
-  const menuSections = [
+  // Full admin menu sections
+  const adminMenuSections = [
     {
       label: 'SYSTEM SETUP',
       items: [
@@ -185,6 +191,9 @@ const AdminLayout = ({ children }) => {
       ],
     },
   ];
+
+  // Use role-specific menu or fall back to full admin menu
+  const menuSections = ROLE_MENUS[roleKey] || adminMenuSections;
 
   const renderIcon = (iconType) => {
     switch (iconType) {
@@ -436,8 +445,16 @@ const AdminLayout = ({ children }) => {
     }
   };
 
+  // Location label for roles that are tied to a specific location
+  const locationLabel = user?.location?.location_name || user?.branch?.branch_name || null;
+  const showLocationChip = (roleKey === ROLES.BRANCH_MANAGER || roleKey === ROLES.WAREHOUSE_PERSONNEL) && locationLabel;
+
   return (
-    <div className="admin-shell">
+    <div
+      className="admin-shell"
+      data-role={roleKey}
+      style={{ '--role-accent': roleAccent }}
+    >
       {/* Sidebar */}
       <aside className="sidebar">
         {/* User Profile Section */}
@@ -455,7 +472,16 @@ const AdminLayout = ({ children }) => {
                 ? `${user.first_name} ${user.last_name}`
                 : user.username || 'System Admin'}
             </span>
-            <span className="sidebar-user-role">{user.role?.role_name || user.role || 'System Admin'}</span>
+            <span className="sidebar-user-role">{roleMeta.label}</span>
+            {showLocationChip && (
+              <span className="sidebar-location-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="10" height="10">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                  <circle cx="12" cy="10" r="3"/>
+                </svg>
+                {locationLabel}
+              </span>
+            )}
           </div>
         </div>
 
