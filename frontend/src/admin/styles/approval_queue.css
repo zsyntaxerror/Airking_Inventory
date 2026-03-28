@@ -1,0 +1,349 @@
+/* ===============================
+   APPROVAL QUEUE - PREFIX: aq-
+================================ */
+
+.aq-content {
+  width: 100%;
+}
+
+/* Page Header */
+.aq-page-header {
+  margin-bottom: 24px;
+}
+
+.aq-page-header h1 {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 4px 0;
+}
+
+.aq-page-header p {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* ===============================
+   TAB NAVIGATION
+================================ */
+.aq-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.aq-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: transparent;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aq-tab-btn:hover {
+  border-color: #d1d5db;
+  color: #374151;
+}
+
+.aq-tab-btn.active {
+  background: #fff;
+  border-color: #dc2626;
+  color: #dc2626;
+}
+
+.aq-tab-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.aq-tab-btn.active svg {
+  stroke: #dc2626;
+}
+
+/* ===============================
+   CARD LIST
+================================ */
+.aq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.aq-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px 24px;
+  transition: box-shadow 0.2s;
+}
+
+.aq-card:hover {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+}
+
+/* Card Top */
+.aq-card-top {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.aq-card-title h3 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 4px 0;
+}
+
+.aq-card-title p {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* Card Bottom */
+.aq-card-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.aq-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aq-amount {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.aq-meta {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+/* Card Actions */
+.aq-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* View Button */
+.aq-btn-view {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.aq-btn-view svg {
+  width: 20px;
+  height: 20px;
+  stroke: #9ca3af;
+}
+
+.aq-btn-view:hover {
+  background: #f3f4f6;
+}
+
+.aq-btn-view:hover svg {
+  stroke: #374151;
+}
+
+/* ===============================
+   BADGES
+================================ */
+.aq-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.aq-badge svg {
+  width: 14px;
+  height: 14px;
+}
+
+.aq-badge.authorized {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.aq-badge.authorized svg {
+  stroke: #16a34a;
+}
+
+.aq-badge.rejected {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.aq-badge.inactive {
+  background: #f3f4f6;
+  color: #9ca3af;
+}
+
+/* ===============================
+   ACTION BUTTONS - PURCHASE ORDERS
+================================ */
+.aq-btn-reject {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: #ffffff;
+  border: 1px solid #fca5a5;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #dc2626;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aq-btn-reject svg {
+  width: 14px;
+  height: 14px;
+  stroke: #dc2626;
+}
+
+.aq-btn-reject:hover {
+  background: #fef2f2;
+  border-color: #dc2626;
+}
+
+.aq-btn-approve {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: #dc2626;
+  border: none;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aq-btn-approve svg {
+  width: 14px;
+  height: 14px;
+  stroke: #ffffff;
+}
+
+.aq-btn-approve:hover {
+  background: #b91c1c;
+}
+
+/* ===============================
+   ACTION BUTTONS - RESTOCK REQUESTS
+================================ */
+.aq-btn-deny {
+  padding: 8px 20px;
+  background: #6b7280;
+  border: none;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aq-btn-deny:hover {
+  background: #4b5563;
+}
+
+.aq-btn-approve-restock {
+  padding: 8px 20px;
+  background: #16a34a;
+  border: none;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aq-btn-approve-restock:hover {
+  background: #15803d;
+}
+
+/* ===============================
+   EMPTY STATE
+================================ */
+.aq-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  background: #f9fafb;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+}
+
+.aq-empty-icon {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.aq-empty-icon svg {
+  width: 48px;
+  height: 48px;
+  stroke: #d1d5db;
+}
+
+.aq-empty-state p {
+  font-size: 14px;
+  color: #9ca3af;
+  margin: 0;
+}
+
+/* ===============================
+   RESPONSIVE
+================================ */
+@media (max-width: 768px) {
+  .aq-tabs {
+    flex-wrap: wrap;
+  }
+
+  .aq-card-bottom {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .aq-card-actions {
+    align-self: flex-end;
+  }
+}
