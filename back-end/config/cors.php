@@ -21,9 +21,12 @@ return [
 
     'allowed_origins' => array_values(array_unique(array_merge($defaultOrigins, $extraOrigins))),
 
-    // Allow any port on localhost / 127.0.0.1
+    // Allow any port on localhost / 127.0.0.1; common private LAN ranges for mobile web (same Wi‑Fi)
     'allowed_origins_patterns' => [
         '#^https?://(localhost|127\.0\.0\.1)(:\d+)?$#',
+        '#^https?://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$#',
+        '#^https?://10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$#',
+        '#^https?://172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(:\d+)?$#',
     ],
 
     'allowed_headers' => ['*'],

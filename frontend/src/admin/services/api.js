@@ -1,11 +1,37 @@
-// Use explicit API URL so requests hit Laravel. CORS allows localhost.
-// Set REACT_APP_API_URL in .env if your backend runs on a different host/port.
-const API_BASE_URL = (() => {
-  const url = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000/api';
-  return url.replace(/\/+$/, ''); // no trailing slash
-})();
+// Resolve at request time (not module load) so the same bundle works on desktop and on mobile
+// when opened via LAN IP. REACT_APP_API_URL often points at 127.0.0.1 — on a phone that is wrong.
+const trimSlash = (u) => String(u || '').replace(/\/+$/, '');
+const rawEnvApi = process.env.REACT_APP_API_URL && String(process.env.REACT_APP_API_URL).trim();
+const apiPort = String(process.env.REACT_APP_API_PORT || '8000').replace(/^:+/, '');
 
-export const getApiBaseUrl = () => API_BASE_URL;
+export const getApiBaseUrl = () => {
+  if (typeof window === 'undefined') {
+    return trimSlash(rawEnvApi || `http://127.0.0.1:${apiPort}/api`);
+  }
+  const h = window.location.hostname;
+  const onLoopback =
+    !h ||
+    h === 'localhost' ||
+    h === '127.0.0.1' ||
+    h === '[::1]' ||
+    h === '::1';
+  const onLan = !onLoopback;
+
+  if (onLan) {
+    const envPointsToLoopback =
+      !rawEnvApi || /127\.0\.0\.1|localhost|\[::1\]|::1/i.test(rawEnvApi);
+    if (!envPointsToLoopback) {
+      return trimSlash(rawEnvApi);
+    }
+    // `php artisan serve` is HTTP only on :8000. Mirroring https:// from the SPA (e.g. mkcert)
+    // would call https://LAN_IP:8000 and fail. Set REACT_APP_API_HTTPS=true only if the API has TLS.
+    const proto = String(process.env.REACT_APP_API_HTTPS || '').toLowerCase() === 'true' ? 'https:' : 'http:';
+    return trimSlash(`${proto}//${h}:${apiPort}/api`);
+  }
+
+  if (rawEnvApi) return trimSlash(rawEnvApi);
+  return `http://127.0.0.1:${apiPort}/api`;
+};
 
 const TOKEN_KEY = 'token';
 
@@ -15,7 +41,7 @@ const TOKEN_KEY = 'token';
  */
 export const checkApiHealth = async () => {
   try {
-    const res = await fetch(API_BASE_URL, {
+    const res = await fetch(getApiBaseUrl(), {
       method: 'GET',
       headers: { Accept: 'application/json' },
       mode: 'cors',
@@ -33,7 +59,7 @@ export const checkApiHealth = async () => {
     return { ok: false, message: data.message || `Server returned ${res.status}` };
   } catch (e) {
     const msg = e.message === 'Failed to fetch'
-      ? 'Cannot reach the server. Start the backend with: cd back-end && php artisan serve'
+      ? 'Cannot reach the server. From back-end run: composer run serve-lan (or php artisan serve --host=0.0.0.0) so phones on Wi‑Fi can use port 8000.'
       : e.message;
     return { ok: false, message: msg };
   }
@@ -62,7 +88,8 @@ const apiRequest = async (endpoint, options = {}) => {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const url = endpoint.startsWith('/') ? `${API_BASE_URL}${endpoint}` : `${API_BASE_URL}/${endpoint}`;
+  const base = getApiBaseUrl();
+  const url = endpoint.startsWith('/') ? `${base}${endpoint}` : `${base}/${endpoint}`;
   const method = options.method || 'GET';
   console.log(`[API] ${method} ${url}`, options.body ? { body: options.body } : '');
   let response;
@@ -74,7 +101,7 @@ const apiRequest = async (endpoint, options = {}) => {
   } catch (networkError) {
     const msg =
       networkError.message === 'Failed to fetch'
-        ? 'Cannot reach the server. Start the backend with: cd back-end && php artisan serve'
+        ? 'Cannot reach the server. From back-end run: composer run serve-lan (or php artisan serve --host=0.0.0.0) for mobile on the same Wi‑Fi.'
         : networkError.message;
     throw new Error(msg);
   }
@@ -271,6 +298,11 @@ export const inventoryAPI = {
           ? { location_id: locationId }
           : {}),
       }),
+    }),
+  scanTransaction: async (data) =>
+    apiRequest('/inventory/scan-transaction', {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 };
 
@@ -638,6 +670,29 @@ export const modelsAPI = {
 };
 
 /* ======================
+   CONSUMABLE SUPPLY + PENDING PRODUCT REGISTRATION
+====================== */
+export const consumableSupplyAPI = {
+  getCatalog: async () => apiRequest('/consumable-supply/catalog'),
+  /** Same values validated on POST /pending-products (consumable supply_type). */
+  getSupplyTypes: async () => apiRequest('/supply-types'),
+};
+
+export const pendingProductsAPI = {
+  getAll: async (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return apiRequest(query ? `/pending-products?${query}` : '/pending-products');
+  },
+  store: async (data) =>
+    apiRequest('/pending-products', { method: 'POST', body: JSON.stringify(data) }),
+  approve: async (id, data = {}) =>
+    apiRequest(`/pending-products/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+};
+
+/* ======================
    BARCODE SCAN API
 ====================== */
 export const barcodeScanAPI = {
@@ -647,4 +702,10 @@ export const barcodeScanAPI = {
   },
   create: async (data) =>
     apiRequest('/barcode-scans', { method: 'POST', body: JSON.stringify(data) }),
+  /** Smart lookup: FOUND | NOT_FOUND | PENDING_CONSUMABLE */
+  lookup: async (barcode) =>
+    apiRequest('/barcode/scan', {
+      method: 'POST',
+      body: JSON.stringify({ barcode: String(barcode || '').trim() }),
+    }),
 };

@@ -19,7 +19,7 @@ class InventoryController extends Controller
         // Only rows whose product still exists in `products` (same catalog as Item Master).
         $query = Inventory::query()
             ->whereHas('product')
-            ->with(['location'])
+            ->with(['location.branch'])
             ->with(['product' => function ($q) {
                 $q->with(['category', 'brand', 'model', 'status', 'unit'])
                     ->withSum(['inventories as stock_on_hand_total' => function ($sub) {
@@ -77,7 +77,7 @@ class InventoryController extends Controller
     {
         $productId = is_object($product) ? $product->product_id : $product;
         $inventory = Inventory::where('product_id', $productId)
-            ->with(['location'])
+            ->with(['location.branch'])
             ->get();
 
         return $this->success($inventory, 'Product inventory retrieved successfully');
@@ -91,8 +91,24 @@ class InventoryController extends Controller
                 'location_id' => 'nullable|exists:locations,location_id',
             ]);
 
-            $product = Product::where('product_code', $validated['barcode'])
-                ->orWhere('barcode', $validated['barcode'])
+            $raw = trim($validated['barcode']);
+            $digitsOnly = preg_replace('/\D/', '', $raw);
+            $variants = array_values(array_unique(array_filter([
+                $raw,
+                strtoupper($raw),
+                $digitsOnly !== '' ? $digitsOnly : null,
+            ])));
+            if ($variants === []) {
+                $variants = [$raw];
+            }
+
+            $product = Product::query()
+                ->where(function ($q) use ($variants) {
+                    foreach ($variants as $v) {
+                        $q->orWhere('product_code', $v)->orWhere('barcode', $v);
+                    }
+                })
+                ->with(['category', 'brand', 'unit', 'status'])
                 ->first();
 
             if (!$product) {
@@ -100,7 +116,7 @@ class InventoryController extends Controller
             }
 
             $inventoryQuery = Inventory::where('product_id', $product->product_id)
-                ->with(['location']);
+                ->with(['location.branch']);
 
             if (isset($validated['location_id'])) {
                 $inventoryQuery->where('location_id', $validated['location_id']);

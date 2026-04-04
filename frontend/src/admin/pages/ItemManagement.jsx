@@ -704,7 +704,7 @@ const ItemManagement = () => {
 
             <div className="im-view-row">
               <div className="im-view-field">
-                <label>{resolveType(viewingItem) === 'appliance' ? 'Product Name' : 'Supply Name'}</label>
+                <label>Product name</label>
                 <p>{viewingItem.product_name || viewingItem.name}</p>
               </div>
               <div className="im-view-field">

@@ -29,6 +29,8 @@ use App\Http\Controllers\Api\AdjustmentController;
 use App\Http\Controllers\Api\ProfitLossController;
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\BarcodeScanController;
+use App\Http\Controllers\Api\InventoryScanTransactionController;
+use App\Http\Controllers\Api\PendingProductController;
 use App\Http\Controllers\Api\StatusLookupController;
 use App\Http\Controllers\Api\UnitLookupController;
 use App\Http\Controllers\Api\RoleController;
@@ -235,6 +237,19 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
         Route::delete('/items/{product}', [ProductController::class, 'destroy']);
     });
 
+    Route::get('/consumable-supply/catalog', [PendingProductController::class, 'catalog']);
+    Route::get('/supply-types', [PendingProductController::class, 'supplyTypesIndex']);
+    Route::middleware('role:admin,branch_manager,warehouse_personnel,inventory_analyst')->group(function () {
+        Route::post('/pending-products', [PendingProductController::class, 'store']);
+    });
+    // List: procurement/audit visibility; approve: same as create submitters who run Item Master workflow
+    Route::middleware('role:admin,branch_manager,inventory_analyst,auditor')->group(function () {
+        Route::get('/pending-products', [PendingProductController::class, 'index']);
+    });
+    Route::middleware('role:admin,branch_manager')->group(function () {
+        Route::post('/pending-products/{pendingProduct}/approve', [PendingProductController::class, 'approve']);
+    });
+
     /*
     |--------------------------------------------------------------------------
     | ERD: ITEM_SERIAL (item_serial)
@@ -291,6 +306,8 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     Route::get('/purchase-orders/{id}', [PurchaseOrderController::class, 'show']);
     Route::middleware('role:admin,inventory_analyst,branch_manager')->group(function () {
         Route::post('/purchase-orders', [PurchaseOrderController::class, 'store']);
+    });
+    Route::middleware('role:admin,branch_manager')->group(function () {
         Route::put('/purchase-orders/{id}', [PurchaseOrderController::class, 'update']);
     });
     Route::middleware('role:admin')->group(function () {
@@ -304,8 +321,10 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     */
     Route::get('/receivings', [ReceivingController::class, 'index']);
     Route::get('/receivings/{id}', [ReceivingController::class, 'show']);
-    Route::middleware('role:admin,warehouse_personnel')->group(function () {
+    Route::middleware('role:admin,warehouse_personnel,branch_manager')->group(function () {
         Route::post('/receivings', [ReceivingController::class, 'store']);
+    });
+    Route::middleware('role:admin,branch_manager')->group(function () {
         Route::put('/receivings/{id}', [ReceivingController::class, 'update']);
     });
     Route::middleware('role:admin')->group(function () {
@@ -480,6 +499,8 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     */
     Route::middleware('role:admin,branch_manager,warehouse_personnel')->group(function () {
         Route::post('/inventory/scan-barcode', [InventoryController::class, 'scanBarcode']);
+        Route::post('/inventory/scan-transaction', [InventoryScanTransactionController::class, 'store']);
+        Route::post('/barcode/scan', [BarcodeScanController::class, 'scanLookup']);
         Route::get('/barcode-scans', [BarcodeScanController::class, 'index']);
         Route::post('/barcode-scans', [BarcodeScanController::class, 'store']);
     });

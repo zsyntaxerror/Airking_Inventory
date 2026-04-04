@@ -1,9 +1,21 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from '../utils/toast';
 import '../styles/login.css';
+
+/** neutral while typing a valid prefix of the answer; wrong once impossible to match */
+function captchaAnswerStatus(answer, expected) {
+  const trimmed = String(answer || '').replace(/\s/g, '');
+  if (!trimmed) return 'neutral';
+  if (!/^\d+$/.test(trimmed)) return 'wrong';
+  const n = parseInt(trimmed, 10);
+  if (n === expected) return 'correct';
+  const expStr = String(expected);
+  if (expStr.startsWith(trimmed) && trimmed.length < expStr.length) return 'neutral';
+  return 'wrong';
+}
 
 const Login = () => {
   const navigate = useNavigate();
@@ -13,9 +25,21 @@ const Login = () => {
   const [captchaAnswer, setCaptchaAnswer] = useState('');
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaQuestion, setCaptchaQuestion] = useState('');
+  const [captchaA, setCaptchaA] = useState(null);
+  const [captchaB, setCaptchaB] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [challengeLoading, setChallengeLoading] = useState(true);
+
+  const expectedSum = useMemo(() => {
+    if (captchaA == null || captchaB == null) return null;
+    return captchaA + captchaB;
+  }, [captchaA, captchaB]);
+
+  const captchaStatus = useMemo(() => {
+    if (expectedSum == null) return 'neutral';
+    return captchaAnswerStatus(captchaAnswer, expectedSum);
+  }, [captchaAnswer, expectedSum]);
 
   const loadChallenge = useCallback(async () => {
     setChallengeLoading(true);
@@ -24,10 +48,23 @@ const Login = () => {
       const d = res?.data ?? res;
       setCaptchaToken(d?.captcha_token || '');
       setCaptchaQuestion(d?.question || '');
+      let a = d?.operand_a;
+      let b = d?.operand_b;
+      if ((a == null || b == null) && d?.question) {
+        const m = String(d.question).match(/What is (\d+) \+ (\d+)\?/);
+        if (m) {
+          a = parseInt(m[1], 10);
+          b = parseInt(m[2], 10);
+        }
+      }
+      setCaptchaA(typeof a === 'number' && !Number.isNaN(a) ? a : null);
+      setCaptchaB(typeof b === 'number' && !Number.isNaN(b) ? b : null);
       setCaptchaAnswer('');
     } catch (e) {
       setCaptchaQuestion('');
       setCaptchaToken('');
+      setCaptchaA(null);
+      setCaptchaB(null);
       toast.error(e.message || 'Could not load security challenge. Check API connection.');
     } finally {
       setChallengeLoading(false);
@@ -43,7 +80,9 @@ const Login = () => {
     setLoading(true);
     setError('');
 
-    if (!captchaToken || !captchaQuestion) {
+    const challengeReady =
+      captchaToken && ((captchaA != null && captchaB != null) || !!captchaQuestion);
+    if (!challengeReady) {
       setError('Security challenge not ready. Refresh the page.');
       setLoading(false);
       await loadChallenge();
@@ -124,6 +163,70 @@ const Login = () => {
                 <label>Security check</label>
                 {challengeLoading ? (
                   <p className="login-challenge-loading">Loading challenge…</p>
+                ) : captchaA != null && captchaB != null ? (
+                  <div
+                    className={
+                      'login-captcha-row' +
+                      (captchaStatus === 'correct' ? ' login-captcha-row--correct' : '') +
+                      (captchaStatus === 'wrong' ? ' login-captcha-row--wrong' : '')
+                    }
+                  >
+                    <span className="login-captcha-num" aria-hidden="true">
+                      {captchaA}
+                    </span>
+                    <span className="login-captcha-op" aria-hidden="true">
+                      +
+                    </span>
+                    <span className="login-captcha-num" aria-hidden="true">
+                      {captchaB}
+                    </span>
+                    <span className="login-captcha-op" aria-hidden="true">
+                      =
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder=""
+                      aria-label="Security check answer"
+                      className={
+                        'login-captcha-answer' +
+                        (captchaStatus === 'correct' ? ' login-captcha-answer--correct' : '') +
+                        (captchaStatus === 'wrong' ? ' login-captcha-answer--wrong' : '')
+                      }
+                      value={captchaAnswer}
+                      onChange={(e) => {
+                        setCaptchaAnswer(e.target.value.replace(/\D/g, ''));
+                        setError('');
+                      }}
+                      maxLength={4}
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="login-captcha-refresh"
+                      onClick={loadChallenge}
+                      title="New question"
+                      aria-label="New security question"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path
+                          d="M1 4v6h6M23 20v-6h-6"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
                 ) : captchaQuestion ? (
                   <>
                     <p className="login-captcha-question">{captchaQuestion}</p>
@@ -133,7 +236,7 @@ const Login = () => {
                       placeholder="Your answer"
                       value={captchaAnswer}
                       onChange={(e) => {
-                        setCaptchaAnswer(e.target.value.replace(/[^\d-]/g, ''));
+                        setCaptchaAnswer(e.target.value.replace(/\D/g, ''));
                         setError('');
                       }}
                       maxLength={10}

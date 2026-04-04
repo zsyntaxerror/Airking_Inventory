@@ -430,6 +430,16 @@ const DraftPOCreator = () => {
       };
 
       const queuePoId = `aq-po-${Date.now()}`;
+      const line_items_snapshot = lineItems.map((li) => ({
+        product: li.product || '—',
+        product_id: li.productId ?? null,
+        qty: li.qty,
+        unit_cost: li.unitCost,
+        total: li.total,
+        type: li.type || null,
+        brand: li.brand || null,
+        category: li.category || null,
+      }));
       const queuePoBase = {
         id: queuePoId,
         po_number: referenceNo,
@@ -438,6 +448,7 @@ const DraftPOCreator = () => {
         prepared_by: preparedBy,
         date: restockEntry.date,
         expected_delivery_date: expectedDeliveryDate,
+        line_items_snapshot,
       };
 
       if (apiCreatePayload) {

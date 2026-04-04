@@ -1,6 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import AdminLayout from '../components/AdminLayout';
+import Modal from '../components/Modal';
+import { useAuth } from '../context/AuthContext';
+import { canActOnApprovalQueue, canApprovePendingRegistrations } from '../utils/roles';
 import {
   getApprovalQueuePurchaseOrders,
   getApprovalQueueRestockRequests,
@@ -8,11 +11,11 @@ import {
   updateApprovalQueueRestockRequestStatus,
   mergeApprovalQueuePurchaseOrder,
 } from '../utils/approvalNotifications';
-import { purchaseOrdersAPI, statusAPI } from '../services/api';
+import { purchaseOrdersAPI, statusAPI, productsAPI, pendingProductsAPI, consumableSupplyAPI } from '../services/api';
 import { toast } from '../utils/toast';
 import '../styles/approval_queue.css';
 
-const AQ_TABS = ['restock-requests', 'purchase-orders', 'branch-transfers'];
+const AQ_TABS = ['item-registration', 'restock-requests', 'purchase-orders', 'branch-transfers'];
 
 const formatYmd = (value) => {
   if (!value) return '—';
@@ -31,7 +34,23 @@ const daysUntil = (value) => {
   return Math.ceil((exp.getTime() - today.getTime()) / 86400000);
 };
 
+const formatDateTime = (value) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-PH', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 const ApprovalQueue = ({ initialTab } = {}) => {
+  const { user } = useAuth();
+  const canActOnQueue = useMemo(() => canActOnApprovalQueue(user), [user]);
+  const canApproveRegistrations = useMemo(() => canApprovePendingRegistrations(user), [user]);
   const location = useLocation();
   const [activeTab, setActiveTab] = useState(() => {
     if (typeof window === 'undefined') return 'restock-requests';
@@ -124,7 +143,202 @@ const ApprovalQueue = ({ initialTab } = {}) => {
   ]);
 
   const [branchTransfers] = useState([]);
+
+  const [pendingRegistrations, setPendingRegistrations] = useState([]);
+  const [pendingRegLoading, setPendingRegLoading] = useState(false);
+  const [packLabels, setPackLabels] = useState({});
+  const [irApproveOpen, setIrApproveOpen] = useState(false);
+  const [irSelected, setIrSelected] = useState(null);
+  const [irApproveForm, setIrApproveForm] = useState({
+    final_product_name: '',
+  });
+  const [irSubmitting, setIrSubmitting] = useState(false);
+
   const [poActionLoading, setPoActionLoading] = useState(null);
+  const [poVerifyModal, setPoVerifyModal] = useState(null);
+  const [poVerifyLines, setPoVerifyLines] = useState([]);
+  const [poVerifyLoading, setPoVerifyLoading] = useState(false);
+  const [poVerifyError, setPoVerifyError] = useState('');
+
+  useEffect(() => {
+    if (!poVerifyModal) {
+      setPoVerifyLines([]);
+      setPoVerifyError('');
+      setPoVerifyLoading(false);
+      return;
+    }
+
+    const po = poVerifyModal;
+    const fromSnapshot = Array.isArray(po.line_items_snapshot) ? po.line_items_snapshot : [];
+    if (fromSnapshot.length) {
+      setPoVerifyLines(
+        fromSnapshot.map((row, i) => ({
+          key: `snap-${i}`,
+          name: row.product || `Product #${row.product_id ?? '—'}`,
+          product_id: row.product_id,
+          qty: row.qty,
+          unit: row.unit_cost,
+          lineTotal: row.total,
+          type: row.type,
+          brand: row.brand,
+          category: row.category,
+        })),
+      );
+      setPoVerifyLoading(false);
+      return;
+    }
+
+    const payloadDetails = po.api_create_payload?.details;
+    if (Array.isArray(payloadDetails) && payloadDetails.length) {
+      setPoVerifyLoading(true);
+      setPoVerifyError('');
+      (async () => {
+        try {
+          const rows = await Promise.all(
+            payloadDetails.map(async (d, i) => {
+              const pid = d.product_id;
+              let name = `Product #${pid}`;
+              try {
+                const res = await productsAPI.getById(pid);
+                const p = res?.data;
+                name = p?.product_name || p?.name || name;
+              } catch {
+                /* keep fallback label */
+              }
+              return {
+                key: `pay-${i}`,
+                name,
+                product_id: pid,
+                qty: d.quantity_ordered,
+                unit: d.unit_price,
+                lineTotal: d.subtotal,
+              };
+            }),
+          );
+          setPoVerifyLines(rows);
+        } catch {
+          setPoVerifyError('Could not load product names for this PO.');
+          setPoVerifyLines(
+            payloadDetails.map((d, i) => ({
+              key: `pay-${i}`,
+              name: `Product #${d.product_id}`,
+              product_id: d.product_id,
+              qty: d.quantity_ordered,
+              unit: d.unit_price,
+              lineTotal: d.subtotal,
+            })),
+          );
+        } finally {
+          setPoVerifyLoading(false);
+        }
+      })();
+      return;
+    }
+
+    const backendId = po.backend_po_id;
+    if (backendId != null && backendId !== '') {
+      setPoVerifyLoading(true);
+      setPoVerifyError('');
+      (async () => {
+        try {
+          const res = await purchaseOrdersAPI.getById(String(backendId));
+          const data = res?.data;
+          const details = Array.isArray(data?.details) ? data.details : [];
+          setPoVerifyLines(
+            details.map((d, i) => {
+              const p = d.product || {};
+              return {
+                key: `api-${d.detail_id ?? i}`,
+                name: p.product_name || p.name || `Product #${d.product_id}`,
+                product_id: d.product_id,
+                qty: d.quantity_ordered,
+                unit: d.unit_price,
+                lineTotal: d.subtotal,
+              };
+            }),
+          );
+        } catch (err) {
+          setPoVerifyError(err?.message || 'Could not load PO lines from the server.');
+          setPoVerifyLines([]);
+        } finally {
+          setPoVerifyLoading(false);
+        }
+      })();
+      return;
+    }
+
+    setPoVerifyLines([]);
+    setPoVerifyError('No line items are stored for this PO. Older sample/local entries may not include a product list.');
+    setPoVerifyLoading(false);
+  }, [poVerifyModal]);
+
+  useEffect(() => {
+    consumableSupplyAPI.getCatalog().then((res) => {
+      const units = res?.data?.packaging_units;
+      const map = {};
+      if (Array.isArray(units)) {
+        units.forEach((u) => {
+          if (u?.key) map[u.key] = u.label || u.key;
+        });
+      }
+      setPackLabels(map);
+    }).catch(() => setPackLabels({}));
+  }, []);
+
+  const fetchPendingRegistrations = useCallback(async () => {
+    setPendingRegLoading(true);
+    try {
+      const res = await pendingProductsAPI.getAll({ per_page: 100 });
+      const raw = res?.data;
+      const list = Array.isArray(raw) ? raw : raw && Array.isArray(raw.data) ? raw.data : [];
+      setPendingRegistrations(list);
+    } catch (e) {
+      toast.error(e.message || 'Could not load pending item registrations.');
+      setPendingRegistrations([]);
+    } finally {
+      setPendingRegLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'item-registration') {
+      fetchPendingRegistrations();
+    }
+  }, [activeTab, fetchPendingRegistrations]);
+
+  const packLabel = (key) => packLabels[key] || key || '—';
+
+  const openIrApprove = (row) => {
+    setIrSelected(row);
+    setIrApproveForm({
+      final_product_name: row.generated_name || '',
+    });
+    setIrApproveOpen(true);
+  };
+
+  const handleIrApproveSubmit = async (e) => {
+    e.preventDefault();
+    if (!irSelected?.pending_product_id) return;
+    const name = irApproveForm.final_product_name.trim();
+    if (!name) {
+      toast.error('Product name is required.');
+      return;
+    }
+    setIrSubmitting(true);
+    try {
+      await pendingProductsAPI.approve(irSelected.pending_product_id, {
+        final_product_name: name,
+      });
+      toast.success('Approved — item is in Item Master. Add unit price and cost there if needed.');
+      setIrApproveOpen(false);
+      setIrSelected(null);
+      fetchPendingRegistrations();
+    } catch (err) {
+      toast.error(err.message || 'Approval failed.');
+    } finally {
+      setIrSubmitting(false);
+    }
+  };
 
   const handlePOAction = async (id, action) => {
     const nextStatus = action === 'approve' ? 'authorized' : 'rejected';
@@ -227,6 +441,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
   };
 
   const handleRestockAction = (id, action) => {
+    if (!canActOnQueue) return;
     const nextStatus = action === 'approve' ? 'approved' : 'denied';
     setRestockRequests(prev =>
       prev.map(req =>
@@ -241,19 +456,58 @@ const ApprovalQueue = ({ initialTab } = {}) => {
       <div className="aq-content">
         {/* Page Header */}
         <div className="aq-page-header">
-          <h1>Approval Queue</h1>
+          <h1>Approvals</h1>
+          {!canActOnQueue && !canApproveRegistrations && (
+            <p className="aq-viewonly-banner">
+              <strong>View only.</strong> Only <strong>Admin</strong> and <strong>Branch Manager</strong> can approve
+              item registrations and authorize purchase orders / restock here. You can review and open PO line items
+              with the eye icon.
+            </p>
+          )}
+          {!canActOnQueue && canApproveRegistrations && (
+            <p className="aq-viewonly-banner">
+              <strong>Item registration:</strong> you can approve pending catalog submissions.{' '}
+              <strong>Purchase orders</strong> and <strong>restock</strong> on this page are view-only unless you are
+              Admin or Branch Manager.
+            </p>
+          )}
           <p>
-            When a draft has <strong>Item Master</strong> lines and a <strong>branch-linked location</strong>,{' '}
-            <strong>Final Submission</strong> creates the purchase order in the <strong>database</strong> immediately
-            (status Pending Approval) so it appears in <strong>Receive PO</strong>. <strong>Approve</strong> sets it to{' '}
-            <strong>Authorized</strong> on the server. Receiving stays blocked until authorized and on or after the
-            expected delivery date when set.
+            <strong>Item registration</strong> is approval-only: confirm the catalog name here;{' '}
+            <strong>unit price and cost</strong> are set later in <strong>Item Master</strong>. When a draft has{' '}
+            <strong>Item Master</strong> lines and a{' '}
+            <strong>branch-linked location</strong>, <strong>Final Submission</strong> creates the purchase order in the{' '}
+            <strong>database</strong> immediately (status Pending Approval) so it appears in <strong>Receive PO</strong>.{' '}
+            {canActOnQueue ? (
+              <>
+                <strong>Approve</strong> sets it to <strong>Authorized</strong> on the server. Receiving stays blocked
+                until authorized and on or after the expected delivery date when set.
+              </>
+            ) : (
+              <>
+                <strong>Admin</strong> or <strong>Branch Manager</strong> must <strong>Authorize</strong> on the server
+                before receiving can proceed (expected delivery date rules still apply).
+              </>
+            )}
           </p>
         </div>
 
         {/* Tab Navigation */}
         <div className="aq-tabs">
           <button
+            type="button"
+            className={`aq-tab-btn ${activeTab === 'item-registration' ? 'active' : ''}`}
+            onClick={() => setActiveTab('item-registration')}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="12" y1="18" x2="12" y2="12"></line>
+              <line x1="9" y1="15" x2="15" y2="15"></line>
+            </svg>
+            Item registration
+          </button>
+          <button
+            type="button"
             className={`aq-tab-btn ${activeTab === 'restock-requests' ? 'active' : ''}`}
             onClick={() => setActiveTab('restock-requests')}
           >
@@ -265,6 +519,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
             Restock requests
           </button>
           <button
+            type="button"
             className={`aq-tab-btn ${activeTab === 'purchase-orders' ? 'active' : ''}`}
             onClick={() => setActiveTab('purchase-orders')}
           >
@@ -275,6 +530,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
             Purchase orders (local)
           </button>
           <button
+            type="button"
             className={`aq-tab-btn ${activeTab === 'branch-transfers' ? 'active' : ''}`}
             onClick={() => setActiveTab('branch-transfers')}
           >
@@ -287,6 +543,100 @@ const ApprovalQueue = ({ initialTab } = {}) => {
             Branch Transfers
           </button>
         </div>
+
+        {/* Item registration (pending products → Item Master) */}
+        {activeTab === 'item-registration' && (
+          <div className="aq-list">
+            {pendingRegLoading ? (
+              <p className="aq-meta" style={{ padding: 24 }}>Loading pending registrations…</p>
+            ) : pendingRegistrations.length === 0 ? (
+              <div className="aq-empty-state">
+                <div className="aq-empty-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                  </svg>
+                </div>
+                <p>No products waiting for registration approval.</p>
+              </div>
+            ) : (
+              pendingRegistrations.map((row) => {
+                const kind = row.registration_kind === 'appliance' ? 'Appliance' : 'Consumable';
+                const snap = row.appliance_snapshot || {};
+                const detail =
+                  row.registration_kind === 'appliance'
+                    ? [snap.capacity_rating, snap.variant].filter(Boolean).join(' · ') || '—'
+                    : [row.supply_type, packLabel(row.packaging_unit)].filter(Boolean).join(' · ');
+                return (
+                  <div className="aq-card" key={row.pending_product_id}>
+                    <div className="aq-card-top">
+                      <div className="aq-card-title">
+                        <h3>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              marginRight: 8,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              verticalAlign: 'middle',
+                              background: row.registration_kind === 'appliance' ? '#dbeafe' : '#fef3c7',
+                              color: row.registration_kind === 'appliance' ? '#1e40af' : '#92400e',
+                            }}
+                          >
+                            {kind}
+                          </span>
+                          {row.generated_name || '—'}
+                        </h3>
+                        <p>
+                          Barcode <code>{row.barcode}</code>
+                          {row.category?.category_name || row.brand?.brand_name
+                            ? ` · ${[row.category?.category_name, row.brand?.brand_name].filter(Boolean).join(' · ')}`
+                            : ''}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="aq-card-bottom">
+                      <div className="aq-card-info">
+                        <span className="aq-meta">{detail}</span>
+                        <span className="aq-meta" style={{ display: 'block', marginTop: 6 }}>
+                          Submitted {formatDateTime(row.created_at)}
+                          {row.creator?.username ? ` · ${row.creator.username}` : ''}
+                          {Number(row.opening_quantity) > 0 ? (
+                            <>
+                              {' · '}
+                              <strong>Opening stock:</strong>{' '}
+                              {Number(row.opening_quantity).toLocaleString()}
+                              {row.openingLocation?.location_name
+                                ? ` @ ${row.openingLocation.location_name}`
+                                : row.opening_location_id
+                                  ? ` @ location #${row.opening_location_id}`
+                                  : ''}
+                            </>
+                          ) : null}
+                        </span>
+                      </div>
+                      <div className="aq-card-actions">
+                        {canApproveRegistrations ? (
+                          <button
+                            type="button"
+                            className="aq-btn-approve-restock"
+                            onClick={() => openIrApprove(row)}
+                          >
+                            APPROVE
+                          </button>
+                        ) : (
+                          <span className="aq-badge view-only">PENDING — view only</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
 
         {/* Purchase Orders Tab */}
         {activeTab === 'purchase-orders' && (
@@ -301,7 +651,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                 </div>
                 <div className="aq-card-bottom">
                   <div className="aq-card-info">
-                    <span className="aq-amount">₱{po.amount.toLocaleString('en-PH')}</span>
+                    <span className="aq-amount">₱{Number(po.amount ?? 0).toLocaleString('en-PH')}</span>
                     <span className="aq-meta">Prepared by: {po.prepared_by} • {po.date}</span>
                     <span className="aq-meta" style={{ display: 'block', marginTop: 6 }}>
                       Expected arrival: <strong>{formatYmd(po.expected_delivery_date)}</strong>
@@ -329,11 +679,15 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                         className="aq-meta"
                         style={{ display: 'block', marginTop: 4, color: po.synced_to_api ? '#1d4ed8' : '#b45309' }}
                       >
-                        {po.synced_to_api
-                          ? 'Saved in the database (Pending Approval). Approve here to set Authorized — then Receive PO can post against it (expected date rules still apply).'
-                          : `Pending approval — Receive PO is blocked until you approve${
-                              po.api_create_payload ? ' (legacy: will create on server when approved).' : '.'
-                            }`}
+                        {canActOnQueue
+                          ? po.synced_to_api
+                            ? 'Saved in the database (Pending Approval). Approve here to set Authorized — then Receive PO can post against it (expected date rules still apply).'
+                            : `Pending approval — Receive PO is blocked until you approve${
+                                po.api_create_payload ? ' (legacy: will create on server when approved).' : '.'
+                              }`
+                          : po.synced_to_api
+                            ? 'Saved in the database (Pending Approval). Awaiting Admin or Branch Manager authorization before Receive PO can post against it.'
+                            : 'Pending approval — Receive PO stays blocked until an Admin or Branch Manager approves.'}
                       </span>
                     )}
                     {po.status === 'pending' && po.api_sync_note && (
@@ -343,7 +697,13 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                     )}
                   </div>
                   <div className="aq-card-actions">
-                    <button className="aq-btn-view" title="View details">
+                    <button
+                      type="button"
+                      className="aq-btn-view"
+                      title="View PO line items for verification"
+                      aria-label="View PO products"
+                      onClick={() => setPoVerifyModal(po)}
+                    >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                         <circle cx="12" cy="12" r="3"></circle>
@@ -359,7 +719,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                       </span>
                     ) : po.status === 'rejected' ? (
                       <span className="aq-badge rejected">REJECTED</span>
-                    ) : (
+                    ) : canActOnQueue ? (
                       <>
                         <button
                           type="button"
@@ -387,6 +747,8 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                           {poActionLoading === po.id ? 'SAVING…' : 'APPROVE'}
                         </button>
                       </>
+                    ) : (
+                      <span className="aq-badge view-only">PENDING — view only</span>
                     )}
                   </div>
                 </div>
@@ -418,11 +780,21 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                       <span className="aq-badge rejected">DENIED</span>
                     ) : req.status === 'inactive' ? (
                       <span className="aq-badge inactive">Inactive</span>
-                    ) : (
+                    ) : canActOnQueue ? (
                       <>
-                        <button className="aq-btn-deny" onClick={() => handleRestockAction(req.id, 'deny')}>DENY</button>
-                        <button className="aq-btn-approve-restock" onClick={() => handleRestockAction(req.id, 'approve')}>APPROVE</button>
+                        <button type="button" className="aq-btn-deny" onClick={() => handleRestockAction(req.id, 'deny')}>
+                          DENY
+                        </button>
+                        <button
+                          type="button"
+                          className="aq-btn-approve-restock"
+                          onClick={() => handleRestockAction(req.id, 'approve')}
+                        >
+                          APPROVE
+                        </button>
                       </>
+                    ) : (
+                      <span className="aq-badge view-only">PENDING — view only</span>
                     )}
                   </div>
                 </div>
@@ -454,6 +826,123 @@ const ApprovalQueue = ({ initialTab } = {}) => {
           </div>
         )}
       </div>
+
+      {irApproveOpen && irSelected && (
+        <Modal
+          title="Approve item registration"
+          onClose={() => !irSubmitting && setIrApproveOpen(false)}
+          maxWidth={480}
+        >
+          <form onSubmit={handleIrApproveSubmit}>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12 }}>
+              Barcode <code>{irSelected.barcode}</code>
+              {' · '}
+              {irSelected.registration_kind === 'appliance' ? 'Appliance' : 'Consumable'}
+            </p>
+            <p style={{ fontSize: 13, color: '#1e40af', background: '#eff6ff', padding: 10, borderRadius: 8, marginBottom: 12 }}>
+              Pricing is not entered here. After approval, open this product in <strong>Item Master</strong> to set unit price and cost.
+            </p>
+            <label style={{ display: 'block', marginBottom: 16, fontSize: 13, fontWeight: 600 }}>
+              Catalog product name
+              <input
+                type="text"
+                style={{ width: '100%', marginTop: 4, padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 6 }}
+                value={irApproveForm.final_product_name}
+                onChange={(e) =>
+                  setIrApproveForm((f) => ({ ...f, final_product_name: e.target.value }))
+                }
+                required
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" className="aq-modal-done" disabled={irSubmitting} onClick={() => setIrApproveOpen(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="aq-btn-approve-restock" disabled={irSubmitting} style={{ border: 'none', cursor: 'pointer' }}>
+                {irSubmitting ? 'Approving…' : 'Approve & add to Item Master'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {poVerifyModal && (
+        <div
+          className="aq-modal-backdrop"
+          role="presentation"
+          onClick={() => setPoVerifyModal(null)}
+        >
+          <div
+            className="aq-modal"
+            role="dialog"
+            aria-labelledby="aq-po-verify-title"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="aq-modal-head">
+              <h2 id="aq-po-verify-title">Verify PO products</h2>
+              <button
+                type="button"
+                className="aq-modal-close"
+                onClick={() => setPoVerifyModal(null)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <p className="aq-modal-sub">
+              <strong>{poVerifyModal.po_number}</strong>
+              {' · '}
+              {poVerifyModal.supplier}
+              {' · '}
+              ₱{Number(poVerifyModal.amount || 0).toLocaleString('en-PH')}
+            </p>
+            {poVerifyLoading && <p className="aq-modal-loading">Loading line items…</p>}
+            {poVerifyError && !poVerifyLoading && (
+              <p className="aq-modal-err">{poVerifyError}</p>
+            )}
+            {!poVerifyLoading && poVerifyLines.length > 0 && (
+              <div className="aq-modal-table-wrap">
+                <table className="aq-modal-table">
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>ID</th>
+                      <th>Qty</th>
+                      <th>Unit</th>
+                      <th>Line total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poVerifyLines.map((row) => (
+                      <tr key={row.key}>
+                        <td>
+                          <span className="aq-modal-prod">{row.name}</span>
+                          {(row.brand || row.category) && (
+                            <span className="aq-modal-meta">
+                              {[row.brand, row.category].filter(Boolean).join(' · ')}
+                              {row.type ? ` · ${row.type}` : ''}
+                            </span>
+                          )}
+                        </td>
+                        <td>{row.product_id ?? '—'}</td>
+                        <td>{row.qty}</td>
+                        <td>₱{Number(row.unit || 0).toLocaleString('en-PH')}</td>
+                        <td>₱{Number(row.lineTotal || 0).toLocaleString('en-PH')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="aq-modal-foot">
+              <button type="button" className="aq-modal-done" onClick={() => setPoVerifyModal(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 };

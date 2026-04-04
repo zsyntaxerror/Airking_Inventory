@@ -68,7 +68,12 @@ export const ROLE_MENUS = {
       label: 'PROCUREMENT & PLANNING',
       items: [
         { name: 'Dashboard', path: '/admin/dashboard', icon: 'dashboard' },
-        { name: 'Approval Queue', path: '/admin/approval-queue', icon: 'approval' },
+        {
+          name: 'Item Registration Approval',
+          path: '/admin/approval-queue',
+          to: '/admin/approval-queue?tab=item-registration',
+          icon: 'approval',
+        },
         { name: 'Purchase Orders', path: '/admin/purchase-orders', icon: 'purchaseorders' },
         { name: 'PO Recommendation', path: '/admin/po-recommendations', icon: 'po' },
         { name: 'Draft PO Creator', path: '/admin/draft-po-creator', icon: 'procurement' },
@@ -135,7 +140,12 @@ export const ROLE_MENUS = {
       label: 'DASHBOARD',
       items: [
         { name: 'Dashboard', path: '/admin/dashboard', icon: 'dashboard' },
-        { name: 'Approval Queue', path: '/admin/approval-queue', icon: 'approval' },
+        {
+          name: 'Item Registration Approval',
+          path: '/admin/approval-queue',
+          to: '/admin/approval-queue?tab=item-registration',
+          icon: 'approval',
+        },
         { name: 'Purchase Orders', path: '/admin/purchase-orders', icon: 'purchaseorders' },
       ],
     },
@@ -210,11 +220,12 @@ export const ROUTE_ACCESS = {
   '/admin/roles': [ROLES.ADMIN],
   '/admin/config': [ROLES.ADMIN],
   '/admin/archive': [ROLES.ADMIN, ROLES.AUDITOR],
-  // Draft PO / restock approval: admin, branch manager, auditor; analysts can open to track queue
+  // Approval Queue: analysts approve item registration; auditors read-only; PO/restock actions: admin & branch manager (canActOnApprovalQueue).
   '/admin/approval-queue': [ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.AUDITOR, ROLES.INVENTORY_ANALYST],
 
   // Item/barcode/classification
   '/admin/items': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.AUDITOR],
+  '/admin/pending-consumables': [ROLES.ADMIN, ROLES.BRANCH_MANAGER],
   '/admin/categories': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.AUDITOR],
   '/admin/brands': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.AUDITOR],
   '/admin/inventory-operation': [ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.WAREHOUSE_PERSONNEL],
@@ -226,6 +237,15 @@ export const ROUTE_ACCESS = {
   '/admin/receivings': [ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.WAREHOUSE_PERSONNEL, ROLES.AUDITOR],
   '/admin/issuances': [ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.WAREHOUSE_PERSONNEL, ROLES.AUDITOR],
   '/admin/adjustments': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.WAREHOUSE_PERSONNEL, ROLES.AUDITOR],
+
+  // Purchase Orders (Approval Queue — PO tab: upcoming / pending; warehouse is view-only there)
+  '/admin/purchase-orders': [
+    ROLES.ADMIN,
+    ROLES.INVENTORY_ANALYST,
+    ROLES.BRANCH_MANAGER,
+    ROLES.WAREHOUSE_PERSONNEL,
+    ROLES.AUDITOR,
+  ],
 
   // Procurement & restocking
   '/admin/suppliers': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.AUDITOR],
@@ -251,4 +271,16 @@ export const canAccessRoute = (user, path) => {
   const allowed = ROUTE_ACCESS[path];
   if (!allowed) return role === ROLES.ADMIN;
   return allowed.includes(role);
+};
+
+/** Approve / reject in Approval Queue (PO + restock local queue). Admin & branch manager only. */
+export const canActOnApprovalQueue = (user) => {
+  const r = getRoleKey(user);
+  return r === ROLES.ADMIN || r === ROLES.BRANCH_MANAGER;
+};
+
+/** Approve pending product registrations (Item registration tab) — matches API pending-products/approve. */
+export const canApprovePendingRegistrations = (user) => {
+  const r = getRoleKey(user);
+  return r === ROLES.ADMIN || r === ROLES.BRANCH_MANAGER;
 };

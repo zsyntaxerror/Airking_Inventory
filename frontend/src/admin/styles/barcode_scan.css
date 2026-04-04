@@ -2,7 +2,11 @@
    BARCODE SCAN  –  matches Figma design
    ================================================================ */
 
-.bs-page { padding: 24px; }
+.bs-page {
+  padding: 24px;
+  /* Extra bottom space when scrolling inside admin main (Issue Out result + actions) */
+  padding-bottom: max(28px, calc(24px + env(safe-area-inset-bottom, 0px)));
+}
 
 .bs-page-header { margin-bottom: 20px; }
 .bs-page-header h1 { font-size: 1.3rem; font-weight: 700; color: #111827; margin: 0 0 3px; }
@@ -152,6 +156,13 @@
   max-height: 300px;
 }
 
+@media (max-width: 768px) {
+  .bs-camera-box {
+    aspect-ratio: 3 / 4;
+    max-height: min(72vh, 560px);
+  }
+}
+
 /* mode bar inside camera */
 .bs-cam-modebar {
   position: absolute;
@@ -188,10 +199,24 @@
 }
 .bs-cam-arrow:hover { color: #fff; background: rgba(255,255,255,0.12); }
 
-/* video */
+/* camera preview: legacy single video or html5-qrcode mount */
 .bs-video {
   position: absolute; inset: 0;
   width: 100%; height: 100%; object-fit: cover;
+}
+.bs-html5qrcode-mount {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  overflow: hidden;
+  background: #000;
+}
+.bs-html5qrcode-mount video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
 }
 
 /* idle center */
@@ -230,15 +255,115 @@
   100% { top: calc(100% - 20px); opacity: 0.7; }
 }
 
+/* camera device picker — below preview (not overlaid / not centered on video) */
+.bs-cam-select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 12px 0 16px;
+  padding: 10px 14px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+.bs-cam-select-bar-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #374151;
+  flex-shrink: 0;
+}
+.bs-cam-select-bar-input {
+  flex: 1;
+  min-width: 180px;
+  max-width: min(100%, 480px);
+  font-size: 0.78rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #111827;
+  cursor: pointer;
+}
+.bs-cam-select-bar-input:focus {
+  outline: none;
+  border-color: #dc2626;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.12);
+}
+.bs-cam-select-bar-input option {
+  color: #111;
+  background: #fff;
+}
+
 /* camera error */
 .bs-cam-err {
-  position: absolute; bottom: 46px; left: 20px; right: 20px;
+  position: absolute; bottom: 50px; left: 20px; right: 20px;
   background: rgba(0,0,0,0.7); color: rgba(255,255,255,0.9);
   font-size: 0.68rem; padding: 5px 10px; border-radius: 4px;
   text-align: center; margin: 0; z-index: 5;
 }
 
-/* camera toggle btn */
+/* hint above shutter (mobile-style UX) */
+.bs-cam-hint {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 118px;
+  z-index: 6;
+  margin: 0;
+  text-align: center;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+/* large “shutter” — tap to decode current frame */
+.bs-cam-shutter {
+  position: absolute;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.bs-cam-shutter-inner {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45), inset 0 0 0 4px rgba(220, 38, 38, 0.15);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.bs-cam-shutter:active .bs-cam-shutter-inner {
+  transform: scale(0.94);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+.bs-cam-shutter-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+/* camera toggle btn — start centered; stop bottom-left so shutter stays center */
 .bs-cam-btn {
   position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
   z-index: 6; border-radius: 6px; padding: 7px 18px;
@@ -248,7 +373,11 @@
 }
 .bs-cam-start { background: #dc2626; color: #fff; }
 .bs-cam-start:hover { background: #b91c1c; }
-.bs-cam-stop  { background: rgba(0,0,0,0.5); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+.bs-cam-stop  {
+  left: 14px;
+  transform: none;
+  background: rgba(0,0,0,0.5); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important;
+}
 .bs-cam-stop:hover  { background: rgba(0,0,0,0.75); }
 
 /* back button (top-left) */
@@ -265,6 +394,11 @@
 /* ═══════════════════════════
    SCAN VIEW — input + filters
 ═══════════════════════════ */
+/* scroll target after scan (mobile: card below fold) */
+.bs-result-wrap {
+  scroll-margin-top: 16px;
+}
+
 .bs-input-section {
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -344,6 +478,33 @@
 .bs-filter-col select:focus { border-color: #dc2626; }
 .bs-filter-col input:focus { border-color: #dc2626; }
 
+.bs-issue-out-setup {
+  border-color: #bfdbfe;
+  background: #f8fafc;
+}
+
+.bs-required-mark {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.bs-filter-col select.bs-select-invalid {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.2);
+}
+
+.bs-field-hint {
+  margin: 6px 0 0;
+  font-size: 0.68rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.bs-field-hint--error {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
 /* ═══════════════════════════
    SCAN RESULT CARD
 ═══════════════════════════ */
@@ -394,6 +555,17 @@
   background: #d1fae5; color: #059669; letter-spacing: 0.02em;
 }
 .bs-status-chip.low { background: #fef3c7; color: #d97706; }
+
+/* Issue Out: stock left the location (not the same meaning as shelf “In Stock”) */
+.bs-status-chip.stock-out {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.bs-status-chip.pending-issue {
+  background: #f1f5f9;
+  color: #475569;
+}
 
 .bs-timestamp {
   font-size: 0.68rem; color: #9ca3af;

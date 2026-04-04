@@ -25,6 +25,8 @@ class LoginCaptchaService
         return [
             'captcha_token' => $token,
             'question' => "What is {$a} + {$b}?",
+            'operand_a' => $a,
+            'operand_b' => $b,
         ];
     }
 

@@ -1,7 +1,17 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AdminLayout from '../components/AdminLayout';
-import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';
+import Modal from '../components/Modal';
+import ProductRegisterModal from '../components/ProductRegisterModal';
+import {
+  BinaryBitmap,
+  DecodeHintType,
+  HTMLCanvasElementLuminanceSource,
+  HybridBinarizer,
+  MultiFormatReader,
+  NotFoundException,
+} from '@zxing/library';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import {
   itemsAPI, productsAPI, inventoryAPI, categoriesAPI, brandsAPI, modelsAPI,
   receivingsAPI, issuancesAPI, transfersAPI, adjustmentsAPI, barcodeScanAPI, locationsAPI, purchaseOrdersAPI,
@@ -9,7 +19,61 @@ import {
 import { toast } from '../utils/toast';
 import { useAuth } from '../context/AuthContext';
 import { getApprovalQueuePurchaseOrders, APPROVAL_QUEUE_STORAGE_KEY } from '../utils/approvalNotifications';
+import { getRoleKey, ROLES } from '../utils/roles';
 import '../styles/barcode_scan.css';
+import '../styles/item_management.css';
+
+/** Short UI beep (success vs not found) — Receive PO smart scan. */
+function playScanFeedback(found) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = found ? 740 : 185;
+    g.gain.value = 0.07;
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.11);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Mount point for html5-qrcode (must match DOM id). */
+const HTML5_QR_MOUNT_ID = 'bs-html5-qrcode-mount';
+
+const HTML5_FORMATS = [
+  Html5QrcodeSupportedFormats.QR_CODE,
+  Html5QrcodeSupportedFormats.EAN_13,
+  Html5QrcodeSupportedFormats.EAN_8,
+  Html5QrcodeSupportedFormats.CODE_128,
+  Html5QrcodeSupportedFormats.CODE_39,
+  Html5QrcodeSupportedFormats.UPC_A,
+  Html5QrcodeSupportedFormats.UPC_E,
+  Html5QrcodeSupportedFormats.CODE_93,
+  Html5QrcodeSupportedFormats.ITF,
+  Html5QrcodeSupportedFormats.CODABAR,
+  Html5QrcodeSupportedFormats.DATA_MATRIX,
+  Html5QrcodeSupportedFormats.PDF_417,
+];
+
+const HTML5_QR_SCAN_FPS = 10;
+
+function getHtml5CameraScanConfig() {
+  return {
+    fps: HTML5_QR_SCAN_FPS,
+    qrbox: (viewfinderWidth, viewfinderHeight) => {
+      const minDim = Math.min(viewfinderWidth, viewfinderHeight);
+      const w = Math.max(160, Math.floor(Math.min(viewfinderWidth * 0.88, minDim * 0.92)));
+      const h = Math.max(88, Math.floor(Math.min(viewfinderHeight * 0.42, minDim * 0.38)));
+      return { width: w, height: h };
+    },
+  };
+}
 
 /* ─── mode config ─────────────────────────────────── */
 const MODES = [
@@ -47,6 +111,18 @@ const MODES = [
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="28" height="28">
         <path d="M17 3l4 4-4 4"/><path d="M3 7h18"/>
         <path d="M7 21l-4-4 4-4"/><path d="M21 17H3"/>
+      </svg>
+    ),
+  },
+  {
+    key: 'audit',
+    label: 'Audit',
+    apiLabel: 'AUDIT',
+    color: '#6366f1',
+    bg: '#eef2ff',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="28" height="28">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v4l2.5 2.5"/>
       </svg>
     ),
   },
@@ -116,6 +192,101 @@ const pickInventoryForLocation = (rows, locationId) => {
   return wh || rows[0];
 };
 
+/** Available units at an inventory row (used before component helpers exist). */
+const availableQtyAtInventoryRow = (inv) => {
+  if (!inv) return 0;
+  const a = inv.available_quantity;
+  const q = inv.quantity_on_hand;
+  if (a != null && a !== '') return Math.max(0, Number(a));
+  if (q != null && q !== '') return Math.max(0, Number(q));
+  return Math.max(0, Number(inv.quantity ?? inv.qty ?? 0));
+};
+
+/** Camera: ignore duplicate reads of the same code within this window (ms). */
+const CAMERA_SAME_CODE_MS = 450;
+
+function buildBarcodeReaderHints() {
+  const hints = new Map();
+  hints.set(DecodeHintType.TRY_HARDER, true);
+  /* Do not set POSSIBLE_FORMATS — narrowing formats caused missed reads on some labels. */
+  return hints;
+}
+
+/** Reused MultiFormatReader for center-crop decodes (full-frame video is often too small for 1D on laptop cams). */
+let cropMultiFormatReader = null;
+function getCropMultiFormatReader() {
+  if (!cropMultiFormatReader) {
+    cropMultiFormatReader = new MultiFormatReader();
+    cropMultiFormatReader.setHints(buildBarcodeReaderHints());
+  }
+  return cropMultiFormatReader;
+}
+
+let cropWorkCanvas = null;
+let cropWorkCtx = null;
+
+/**
+ * Decode from a zoomed center band of the video (where the UI scan line sits).
+ * Built-in laptop cameras usually need this; full-frame ZXing sees too few pixels per bar.
+ */
+function tryDecodeVideoCenterCropZxing(video) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (vw < 48 || vh < 48) return null;
+  const fracW = 0.74;
+  const fracH = 0.42;
+  const cropW = Math.floor(vw * fracW);
+  const cropH = Math.floor(vh * fracH);
+  const sx = Math.floor((vw - cropW) / 2);
+  const sy = Math.floor((vh - cropH) / 2);
+  const scale = Math.max(2, Math.min(3.2, 1280 / cropW));
+  const outW = Math.floor(cropW * scale);
+  const outH = Math.floor(cropH * scale);
+  if (!cropWorkCanvas) {
+    cropWorkCanvas = document.createElement('canvas');
+    cropWorkCtx = cropWorkCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  if (!cropWorkCtx) return null;
+  cropWorkCanvas.width = outW;
+  cropWorkCanvas.height = outH;
+  cropWorkCtx.filter = 'contrast(1.12) saturate(0.85)';
+  cropWorkCtx.drawImage(video, sx, sy, cropW, cropH, 0, 0, outW, outH);
+  cropWorkCtx.filter = 'none';
+  try {
+    const luminance = new HTMLCanvasElementLuminanceSource(cropWorkCanvas, true);
+    const bitmap = new BinaryBitmap(new HybridBinarizer(luminance));
+    const result = getCropMultiFormatReader().decode(bitmap);
+    const text = typeof result.getText === 'function' ? result.getText() : '';
+    const code = String(text || '').replace(/\s+/g, '').trim();
+    return code || null;
+  } catch (e) {
+    if (e instanceof NotFoundException) return null;
+    return null;
+  }
+}
+
+/** Chromium BarcodeDetector (Chrome/Edge) — often reads phone-screen / glossy 1D better than ZXing alone. */
+const NATIVE_BARCODE_FORMATS = [
+  'qr_code',
+  'ean_13',
+  'ean_8',
+  'code_128',
+  'code_39',
+  'codabar',
+  'itf',
+  'upc_a',
+  'upc_e',
+  'data_matrix',
+  'pdf417',
+];
+
+function hasNativeBarcodeDetector() {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.BarcodeDetector === 'function'
+  );
+}
+
 const startOfLocalDay = (value) => {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
@@ -183,9 +354,173 @@ const mergeSyncedLocalPurchaseOrders = (apiRows) => {
   return Array.from(byId.values());
 };
 
+const CAMERA_STORAGE_KEY = 'bs_inventory_camera_device_id';
+
+/** Laravel list endpoints usually return `{ data: [...] }`; tolerate odd shapes. */
+const extractApiDataArray = (res) => {
+  const d = res?.data;
+  if (Array.isArray(d)) return d;
+  if (d && Array.isArray(d.data)) return d.data;
+  return [];
+};
+
+/**
+ * Known virtual / software cameras (OBS, etc.). `\bobs\b` catches "OBS Virtual Camera" / "OBS-Camera"
+ * without matching substrings like "Panasonic" (no word "obs").
+ */
+const isLikelyVirtualCameraLabel = (label) => {
+  const s = String(label || '').toLowerCase();
+  if (!s) return false;
+  return (
+    /\bobs\b|\bobs\s*virtual\b|open\s*broadcaster|obs\s*studio|streamlabs|webcamoid|manycam|epocam|snap\s*camera|snapchat|droidcam|\bivcam\b|e2esoft|xsplit|chromacam|camtwist|newtek|unitycapture|screen\s*capture|desktop\s*video|fake|simulator|v\s*mixer|reincubate|iriun|iriun\s*webcam|\bndi\b|nvidia\s*broadcast|mmhmm|virtual\s*camera|virtual\s*webcam|virtual\s*device|\(virtual\)|^\s*obs\s*camera\s*$/.test(
+      s,
+    )
+  );
+};
+
+/** List all devices; real cameras first, virtual last (default selection uses first non-virtual). */
+const sortVideoDevicesPhysicalFirst = (all) => {
+  const list = Array.isArray(all) ? [...all] : [];
+  return list.sort((a, b) => {
+    const va = isLikelyVirtualCameraLabel(a.label);
+    const vb = isLikelyVirtualCameraLabel(b.label);
+    if (va === vb) return 0;
+    return va ? 1 : -1;
+  });
+};
+
+/** Among physical cameras, prefer likely Windows default: built-in / USB / known OEM labels first. */
+const sortPhysicalCamerasDefaultFirst = (devices) => {
+  const list = Array.isArray(devices) ? [...devices] : [];
+  const rank = (label) => {
+    const s = String(label || '').toLowerCase();
+    let n = 0;
+    if (/integrated|built-?in|internal/.test(s)) n += 10;
+    if (/^usb|usb2|\busb\b.*(camera|video)|usb video device/.test(s)) n += 8;
+    if (/hd user facing|user-facing|front-facing|facing\s*user/.test(s)) n += 5;
+    if (/\b(hp|lenovo|dell|logitech|microsoft|surface|acer|asus|msi|realtek)\b/.test(s)) n += 3;
+    if (/webcam|web\s*cam|true\s*vision|easy\s*camera/.test(s)) n += 2;
+    return n;
+  };
+  return list.sort((a, b) => rank(b.label) - rank(a.label));
+};
+
+/** Browsers only expose camera on HTTPS or localhost — not on http://192.168.x.x etc. */
+function assertCameraEnvironment() {
+  if (typeof window === 'undefined') return;
+  if (!window.isSecureContext) {
+    const host = window.location?.hostname || '';
+    const isLocalName =
+      host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+    if (!isLocalName) {
+      throw new Error(
+        'INSECURE_ORIGIN: Camera is blocked on plain HTTP unless you use localhost. Open this app as http://localhost:PORT (or use HTTPS). Using http://192.168… or another PC name will not work.',
+      );
+    }
+  }
+  if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.enumerateDevices) {
+    throw new Error(
+      'Camera API is not available. Use a current Chrome or Edge browser, and open the site over https:// or http://localhost.',
+    );
+  }
+}
+
+async function getUserMediaVideo(constraints = { video: true }) {
+  assertCameraEnvironment();
+  const md = navigator.mediaDevices;
+  if (md.getUserMedia) {
+    return md.getUserMedia(constraints);
+  }
+  return Promise.reject(new Error('getUserMedia is not supported.'));
+}
+
+/** Map DOMException / Error to a short, actionable message for the UI. */
+function cameraAccessErrorMessage(err) {
+  const name = err?.name || '';
+  const msg = String(err?.message || err || '');
+  if (/INSECURE_ORIGIN/i.test(msg)) {
+    return msg.replace(/^INSECURE_ORIGIN:\s*/i, '');
+  }
+  if (name === 'NotAllowedError' || /denied|not allowed|Permission/i.test(msg)) {
+    return 'The browser did not allow the camera. Click the lock/camera icon in the address bar, set Camera to Allow, then reload the page. Also check Windows Settings → Privacy → Camera → allow desktop apps / browser access.';
+  }
+  if (name === 'NotFoundError' || /Could not start video source|DevicesNotFound/i.test(msg)) {
+    return 'No camera was found or it is disabled. Plug in the webcam, enable it in Device Manager, and close other apps (Zoom, Teams, OBS) that may be using it.';
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError' || /Could not start|busy|in use/i.test(msg)) {
+    return 'The camera could not be started (often in use or driver issue). Close other apps using the camera, disconnect and reconnect the USB webcam, then try again.';
+  }
+  if (name === 'OverconstrainedError') {
+    return 'This camera does not support the requested settings. Try another camera in the list or update the camera driver.';
+  }
+  if (name === 'SecurityError' || /secure context/i.test(msg)) {
+    return 'Camera requires a secure connection. Use https:// or http://localhost only.';
+  }
+  return msg || 'Unknown camera error.';
+}
+
+/**
+ * Open a temporary stream then enumerate. Some browsers only report every videoinput
+ * after permission + a stream (otherwise you may only see e.g. OBS Virtual Camera).
+ * Prefer `{ video: true }` first so the probe matches the browser / Windows default camera.
+ */
+async function enumerateVideoInputsWithLabels() {
+  assertCameraEnvironment();
+  let tmp;
+  const constraints = [
+    { video: true },
+    { video: { facingMode: { ideal: 'environment' } } },
+    { video: { facingMode: { ideal: 'user' } } },
+  ];
+  let lastErr;
+  for (const c of constraints) {
+    try {
+      tmp = await getUserMediaVideo(c);
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (!tmp) throw new Error(cameraAccessErrorMessage(lastErr));
+  tmp.getTracks().forEach((t) => t.stop());
+  /* Let the driver release the device before the scanner opens another stream (Windows). */
+  await new Promise((r) => setTimeout(r, 280));
+  const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+  if (inputs.length === 0) throw new Error('No camera found.');
+  return inputs.map((d, i) => ({
+    deviceId: d.deviceId,
+    label: d.label?.trim() || `Camera ${i + 1}`,
+  }));
+}
+
+function pickPreferredCameraDeviceId(devices, savedId) {
+  if (!devices?.length) return null;
+  const saved = devices.find(
+    (d) => d.deviceId === savedId && !isLikelyVirtualCameraLabel(d.label),
+  );
+  if (saved) return saved.deviceId;
+  const physical = devices.find((d) => !isLikelyVirtualCameraLabel(d.label));
+  if (physical) return physical.deviceId;
+  return devices[0].deviceId;
+}
+
 const BarcodeScan = () => {
   const navigate = useNavigate();
   const { user: _user } = useAuth();
+  const roleKey = useMemo(() => getRoleKey(_user || {}), [_user]);
+  const isAdminRole = roleKey === ROLES.ADMIN;
+  /** Browsers block getUserMedia on plain http:// unless hostname is localhost. */
+  const cameraBlockedPlainHttp = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    if (window.isSecureContext) return false;
+    const host = window.location?.hostname || '';
+    return !(
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '[::1]' ||
+      host === '::1'
+    );
+  }, []);
   const scannedByName = useMemo(() => {
     const currentUser = _user || {};
     if (currentUser.first_name) {
@@ -213,6 +548,14 @@ const BarcodeScan = () => {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError,  setCameraError]  = useState('');
   const [lastDecoded, setLastDecoded] = useState('');
+  const [cameraDevices, setCameraDevices] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState(() => {
+    try {
+      return localStorage.getItem(CAMERA_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
 
   /* ── filters ── */
   const [categories,     setCategories]     = useState([]);
@@ -246,37 +589,145 @@ const BarcodeScan = () => {
   const [receivePoProductIds, setReceivePoProductIds] = useState([]);
   const [receivePoLinesLoading, setReceivePoLinesLoading] = useState(false);
 
+  const showPricingFields = roleKey === ROLES.ADMIN || roleKey === ROLES.BRANCH_MANAGER;
+  const [notFoundPromptOpen, setNotFoundPromptOpen] = useState(false);
+  const [pendingRegisterBarcode, setPendingRegisterBarcode] = useState('');
+  const [registerProductOpen, setRegisterProductOpen] = useState(false);
+
   const transferDestinationLocations = useMemo(
     () => sortLocationsCarmenFirst(locations),
     [locations],
   );
 
+  const cameraSelectValue = useMemo(() => {
+    if (!cameraDevices.length) return '';
+    return cameraDevices.some((d) => d.deviceId === selectedCameraId)
+      ? selectedCameraId
+      : cameraDevices[0].deviceId;
+  }, [cameraDevices, selectedCameraId]);
+
   const loadPurchaseOrders = useCallback(() => {
     purchaseOrdersAPI
       .getAll({ per_page: 500 })
       .then((r) => {
-        const rows = Array.isArray(r.data) ? r.data : [];
+        const rows = extractApiDataArray(r);
         setPurchaseOrders(mergeSyncedLocalPurchaseOrders(rows));
       })
-      .catch(() => {
+      .catch((e) => {
         setPurchaseOrders(mergeSyncedLocalPurchaseOrders([]));
+        toast.error(e?.message || 'Could not load purchase orders. Check API URL and network.');
       });
   }, []);
 
+  /** Refetch dashboard “Recent movement” (home + after transactions). */
+  const reloadRecentMovement = useCallback(() => {
+    const run = async () => {
+      try {
+        const [recRes, issRes, trRes] = await Promise.allSettled([
+          receivingsAPI.getAll({ per_page: 3, sort: 'desc' }),
+          issuancesAPI.getAll({ per_page: 3, sort: 'desc' }),
+          transfersAPI.getAll({ per_page: 3, sort: 'desc' }),
+        ]);
+        const all = [];
+        const extract = (res, type) => {
+          if (res.status === 'fulfilled') {
+            const items = Array.isArray(res.value?.data) ? res.value.data : [];
+            items.forEach((item) => all.push({ ...item, _type: type }));
+          }
+        };
+        extract(recRes, 'RECEIVE');
+        extract(issRes, 'ISSUE');
+        extract(trRes, 'TRANSFER');
+        all.sort((a, b) => {
+          const da = new Date(b.created_at || b.transaction_date || 0);
+          const db = new Date(a.created_at || a.transaction_date || 0);
+          return da - db;
+        });
+        setRecentMovement(all.slice(0, 5));
+      } catch {
+        /* ignore */
+      }
+    };
+    void run();
+  }, []);
+
+  /**
+   * Pull latest inventory rows + product snapshot from the API so the UI matches the server
+   * after a transaction (no full page refresh).
+   */
+  const mergeFreshInventoryForSession = useCallback(async (productId, locationId, barcode, scannedAt) => {
+    if (productId == null || productId === '') return;
+    try {
+      const [invRes, prodRes] = await Promise.all([
+        inventoryAPI.getAll({ product_id: productId, per_page: 500 }),
+        productsAPI.getById(productId).catch(() => null),
+      ]);
+      const invList = Array.isArray(invRes?.data) ? invRes.data : [];
+      const latestInventory = pickInventoryForLocation(invList, locationId)
+        || pickInventoryForLocation(invList, '');
+      const rawProd = prodRes?.data ?? prodRes;
+      const itemMerge = rawProd && typeof rawProd === 'object' && rawProd.product_id != null
+        ? { ...rawProd, id: rawProd.product_id }
+        : null;
+
+      setScanResult((prev) => {
+        if (!prev) return prev;
+        if (String(prev.item?.product_id ?? prev.item?.id) !== String(productId)) return prev;
+        if (barcode != null && scannedAt != null && (prev.barcode !== barcode || prev.scannedAt !== scannedAt)) {
+          return prev;
+        }
+        return {
+          ...prev,
+          inventory: latestInventory,
+          inventoryRows: invList,
+          ...(itemMerge ? { item: { ...prev.item, ...itemMerge } } : {}),
+        };
+      });
+      setScanHistory((prev) => {
+        const next = prev.map((h) => {
+          const sameProduct = String(h.item?.product_id ?? h.item?.id) === String(productId);
+          if (!sameProduct) return h;
+          if (barcode != null && scannedAt != null && (h.barcode !== barcode || h.scannedAt !== scannedAt)) {
+            return h;
+          }
+          return {
+            ...h,
+            inventory: latestInventory,
+            inventoryRows: invList,
+            ...(itemMerge ? { item: { ...h.item, ...itemMerge } } : {}),
+          };
+        });
+        try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch { /* ignore */ }
+        return next;
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   /* ── refs ── */
-  const videoRef      = useRef(null);
-  const readerRef     = useRef(null);   // BrowserMultiFormatReader instance
-  const inputRef      = useRef(null);
-  const lastCodeRef   = useRef('');
-  const lastTimeRef   = useRef(0);
-  const handleScanRef = useRef(null);
+  const scanResultRef = useRef(null);
+  const html5QrRef = useRef(null);
+  const inputRef       = useRef(null);
+  const lastCodeRef    = useRef('');
+  const lastTimeRef    = useRef(0);
+  const handleScanRef  = useRef(null);
+  const scanningRef    = useRef(false);
+  const inputScanTimerRef = useRef(null);
+  /** Resets Issue Out quantity to 1 only when preview target (barcode + time) changes */
+  const issuancePreviewKeyRef = useRef('');
 
   /* ── load filter data ── */
   useEffect(() => {
     categoriesAPI.getAll().then((r) => setCategories(Array.isArray(r.data) ? r.data : [])).catch(() => {});
     brandsAPI.getAll().then((r)     => setBrands(Array.isArray(r.data) ? r.data : [])).catch(() => {});
     modelsAPI.getAll({ per_page: 200 }).then((r) => setModels(Array.isArray(r.data) ? r.data : [])).catch(() => {});
-    locationsAPI.getAll({ per_page: 500 }).then((r) => setLocations(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+    locationsAPI
+      .getAll({ per_page: 500 })
+      .then((r) => setLocations(extractApiDataArray(r)))
+      .catch((e) => {
+        toast.error(e?.message || 'Could not load locations. Check API URL and network.');
+      });
   }, []);
 
   useEffect(() => {
@@ -356,33 +807,8 @@ const BarcodeScan = () => {
   /* ── load recent movement for home page ── */
   useEffect(() => {
     if (scanMode !== null) return;
-    const load = async () => {
-      try {
-        const [recRes, issRes, trRes] = await Promise.allSettled([
-          receivingsAPI.getAll({ per_page: 3, sort: 'desc' }),
-          issuancesAPI.getAll({ per_page: 3, sort: 'desc' }),
-          transfersAPI.getAll({ per_page: 3, sort: 'desc' }),
-        ]);
-        const all = [];
-        const extract = (res, type) => {
-          if (res.status === 'fulfilled') {
-            const items = Array.isArray(res.value?.data) ? res.value.data : [];
-            items.forEach((item) => all.push({ ...item, _type: type }));
-          }
-        };
-        extract(recRes, 'RECEIVE');
-        extract(issRes, 'ISSUE');
-        extract(trRes,  'TRANSFER');
-        all.sort((a, b) => {
-          const da = new Date(b.created_at || b.transaction_date || 0);
-          const db = new Date(a.created_at || a.transaction_date || 0);
-          return da - db;
-        });
-        setRecentMovement(all.slice(0, 5));
-      } catch {}
-    };
-    load();
-  }, [scanMode]);
+    reloadRecentMovement();
+  }, [scanMode, reloadRecentMovement]);
 
   /* ── scan handler ── */
   const handleScan = useCallback(async (barcode) => {
@@ -393,22 +819,327 @@ const BarcodeScan = () => {
     try {
       const modeEarly = scanMode || MODES[modeIndex];
       if (modeEarly?.key === 'receive-po') {
-        if (!txForm.pc_id) {
-          toast.error('Select a Purchase Order before scanning.');
-          return;
-        }
         if (!txForm.location_id) {
           toast.error('Select a location before scanning.');
           return;
         }
-        if (receivePoLinesLoading) {
-          toast.error('Loading PO line items — try again in a moment.');
+        if (txForm.pc_id) {
+          if (receivePoLinesLoading) {
+            toast.error('Loading PO line items — try again in a moment.');
+            return;
+          }
+          if (receivePoProductIds.length === 0) {
+            toast.error('This PO has no line items loaded. Re-select the PO or pick another order.');
+            return;
+          }
+        }
+        try {
+          const lookupRes = await barcodeScanAPI.lookup(code);
+          const lookupPayload = lookupRes?.data;
+          if (lookupPayload?.status === 'PENDING_CONSUMABLE') {
+            playScanFeedback(false);
+            toast.warning('This product registration is pending approval');
+            return;
+          }
+          if (lookupPayload?.status === 'NOT_FOUND') {
+            playScanFeedback(false);
+            toast.warning('Barcode not registered');
+            setPendingRegisterBarcode(code);
+            setNotFoundPromptOpen(true);
+            return;
+          }
+          if (lookupPayload?.status === 'FOUND' && lookupPayload.product) {
+            playScanFeedback(true);
+            toast.success('Product found');
+            const pid = Number(lookupPayload.product.product_id);
+            if (
+              txForm.pc_id &&
+              receivePoProductIds.length > 0 &&
+              Number.isFinite(pid) &&
+              !receivePoProductIds.includes(pid)
+            ) {
+              toast.error('This product is not on the selected Purchase Order.');
+              return;
+            }
+          }
+        } catch (lookupErr) {
+          toast.error(lookupErr.message || 'Barcode lookup failed.');
           return;
         }
-        if (receivePoProductIds.length === 0) {
-          toast.error('This PO has no line items loaded. Re-select the PO or pick another order.');
+      }
+
+      /* ── Issue Out: scan loads product + stock only; user enters quantity then confirms (deduct on Execute).
+          NOT_FOUND here often means a unit serial — post issuance immediately with quantity from the form. ── */
+      if (modeEarly?.key === 'issue-out') {
+        if (!txForm.location_id) {
+          toast.error('Select a location in Issue Out setup before scanning.');
           return;
         }
+        const setupQty = Number(txForm.quantity);
+        if (!Number.isInteger(setupQty) || setupQty < 1) {
+          toast.error('Enter a valid quantity (whole number ≥ 1) in Issue Out setup.');
+          return;
+        }
+        let lookupPayload = null;
+        try {
+          const lookupRes = await barcodeScanAPI.lookup(code);
+          lookupPayload = lookupRes?.data;
+        } catch (lookupErr) {
+          toast.error(lookupErr.message || 'Barcode lookup failed.');
+          return;
+        }
+        if (lookupPayload?.status === 'PENDING_CONSUMABLE') {
+          playScanFeedback(false);
+          toast.warning('This product registration is pending approval');
+          return;
+        }
+        if (lookupPayload?.status === 'FOUND' && lookupPayload.product) {
+          playScanFeedback(true);
+          toast.success('Product found — tap Issue stock out to deduct the setup quantity.');
+          const product = lookupPayload.product;
+          const pid = Number(product.product_id);
+          const invRes = await inventoryAPI.getAll({ product_id: pid, per_page: 500 });
+          const inventoryRows = Array.isArray(invRes.data) ? invRes.data : [];
+          const inventory = pickInventoryForLocation(inventoryRows, txForm.location_id);
+          if (!inventory) {
+            playScanFeedback(false);
+            toast.error('No inventory record at this location for this product.');
+            return;
+          }
+          if (availableQtyAtInventoryRow(inventory) < 1) {
+            playScanFeedback(false);
+            toast.error('No stock available at this location.');
+            return;
+          }
+          const item = { ...product, id: product.product_id };
+          const mode = scanMode || MODES[modeIndex];
+          const scannedAt = new Date().toLocaleString();
+          const result = {
+            item,
+            inventory,
+            inventoryRows,
+            barcode: code,
+            mode: mode.apiLabel,
+            modeKey: mode.key,
+            scannedAt,
+            scannedBy: scannedByName,
+            transactionEngineApplied: false,
+            auditSnapshot: null,
+          };
+          setScanResult(result);
+          setTxLogs([]);
+          setScanHistory((prev) => {
+            const next = [result, ...prev.slice(0, 49)];
+            try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch {}
+            return next;
+          });
+          setBarcodeInput('');
+          setTimeout(() => inputRef.current?.focus(), 50);
+          try {
+            await barcodeScanAPI.create({
+              barcode: code,
+              product_id: item.product_id ?? item.id,
+              scan_mode: mode.key,
+              scanned_at: new Date().toISOString(),
+            });
+          } catch {}
+          return;
+        }
+        if (lookupPayload?.status === 'NOT_FOUND') {
+          const qtyEngine = Math.max(1, Number(txForm.quantity) || 1);
+          const engRes = await inventoryAPI.scanTransaction({
+            barcode: code,
+            transaction_type: 'issuance',
+            location_id: Number(txForm.location_id),
+            quantity: qtyEngine,
+          });
+          const eng = engRes?.data;
+          if (!eng || typeof eng !== 'object') {
+            toast.error('Invalid transaction engine response.');
+            return;
+          }
+          if (eng.action === 'rejected') {
+            playScanFeedback(false);
+            toast.error(eng.reason || 'Use the product barcode to choose quantity, or check serial/stock.');
+            return;
+          }
+          (Array.isArray(eng.warnings) ? eng.warnings : []).forEach((w) => toast.warning(w));
+          const p = eng.product;
+          if (!p) {
+            toast.error('No product data returned.');
+            return;
+          }
+          playScanFeedback(true);
+          toast.success('Issuance posted (serial / alternate code).');
+          const item = { ...p, id: p.product_id };
+          const inventoryRows = Array.isArray(eng.inventory) ? eng.inventory : [];
+          const inventory = pickInventoryForLocation(inventoryRows, txForm.location_id)
+            || pickInventoryForLocation(inventoryRows, '');
+          const mode = scanMode || MODES[modeIndex];
+          const result = {
+            item,
+            inventory,
+            inventoryRows,
+            barcode: code,
+            mode: mode.apiLabel,
+            modeKey: mode.key,
+            scannedAt: new Date().toLocaleString(),
+            scannedBy: scannedByName,
+            transactionEngineApplied: true,
+            auditSnapshot: null,
+            issuedQuantity: qtyEngine,
+          };
+          setScanResult(result);
+          setTxLogs([]);
+          setScanHistory((prev) => {
+            const next = [result, ...prev.slice(0, 49)];
+            try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch {}
+            return next;
+          });
+          setBarcodeInput('');
+          setTimeout(() => inputRef.current?.focus(), 50);
+          queueMicrotask(() => {
+            void mergeFreshInventoryForSession(item.product_id ?? item.id, txForm.location_id, code, result.scannedAt);
+            reloadRecentMovement();
+          });
+          try {
+            await barcodeScanAPI.create({
+              barcode: code,
+              product_id: item.product_id ?? item.id,
+              scan_mode: mode.key,
+              scanned_at: new Date().toISOString(),
+            });
+          } catch {}
+          return;
+        }
+        playScanFeedback(false);
+        toast.warning('Barcode not registered');
+        setPendingRegisterBarcode(code);
+        setNotFoundPromptOpen(true);
+        return;
+      }
+
+      /* ── Core transaction engine: server validates PO / stock / serials, updates inventory, logs every scan ── */
+      const engineTransactionType =
+        modeEarly?.key === 'receive-po'
+          ? 'receiving'
+          : modeEarly?.key === 'transfer' && transferSubmode === 'out'
+            ? 'transfer'
+            : modeEarly?.key === 'audit'
+              ? 'audit'
+              : null;
+
+      if (engineTransactionType) {
+        if (engineTransactionType === 'audit') {
+          if (!txForm.location_id) {
+            toast.error('Select a location before scanning.');
+            return;
+          }
+        }
+        if (engineTransactionType === 'transfer') {
+          if (!txForm.location_id || !txForm.to_location_id) {
+            toast.error('Select source and destination locations before scanning.');
+            return;
+          }
+        }
+
+        const qtyEngine = Math.max(1, Number(txForm.quantity) || 1);
+        const body = {
+          barcode: code,
+          transaction_type: engineTransactionType,
+        };
+        if (engineTransactionType === 'receiving') {
+          if (txForm.pc_id) {
+            body.po_id = Number(txForm.pc_id);
+          }
+          body.location_id = Number(txForm.location_id);
+          body.quantity = qtyEngine;
+        }
+        if (engineTransactionType === 'transfer') {
+          body.from_location_id = Number(txForm.location_id);
+          body.to_location_id = Number(txForm.to_location_id);
+          body.quantity = qtyEngine;
+        }
+        if (engineTransactionType === 'audit') {
+          body.location_id = Number(txForm.location_id);
+        }
+
+        const engRes = await inventoryAPI.scanTransaction(body);
+        const eng = engRes?.data;
+        if (!eng || typeof eng !== 'object') {
+          toast.error('Invalid transaction engine response.');
+          return;
+        }
+        if (eng.action === 'rejected') {
+          toast.error(eng.reason || 'Scan rejected.');
+          return;
+        }
+        (Array.isArray(eng.warnings) ? eng.warnings : []).forEach((w) => toast.warning(w));
+        const p = eng.product;
+        if (!p) {
+          toast.error('No product data returned.');
+          return;
+        }
+        const item = { ...p, id: p.product_id };
+        const inventoryRows = Array.isArray(eng.inventory) ? eng.inventory : [];
+        const modeForPick = scanMode || MODES[modeIndex];
+        const locForPick =
+          modeForPick?.key === 'transfer' && transferSubmode === 'in'
+            ? txForm.to_location_id
+            : txForm.location_id;
+        const inventory = pickInventoryForLocation(inventoryRows, locForPick)
+          || pickInventoryForLocation(inventoryRows, txForm.location_id)
+          || pickInventoryForLocation(inventoryRows, '');
+
+        const mode = scanMode || MODES[modeIndex];
+        const engineApplied = engineTransactionType !== 'audit';
+        const result = {
+          item,
+          inventory,
+          inventoryRows,
+          barcode: code,
+          mode: mode.apiLabel,
+          modeKey: mode.key,
+          scannedAt: new Date().toLocaleString(),
+          scannedBy: scannedByName,
+          transactionEngineApplied: engineApplied,
+          auditSnapshot: eng.audit || null,
+        };
+
+        setScanResult(result);
+        setTxLogs([]);
+        setScanHistory((prev) => {
+          const next = [result, ...prev.slice(0, 49)];
+          try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch {}
+          return next;
+        });
+        setBarcodeInput('');
+        setTimeout(() => inputRef.current?.focus(), 50);
+
+        {
+          const pidMerge = item.product_id ?? item.id;
+          const locMerge = locForPick || txForm.location_id;
+          queueMicrotask(() => {
+            void mergeFreshInventoryForSession(pidMerge, locMerge, code, result.scannedAt);
+            reloadRecentMovement();
+            if (engineTransactionType === 'receiving') loadPurchaseOrders();
+            if (engineTransactionType === 'transfer') {
+              transfersAPI.getAll({ per_page: 100 }).then((r) => {
+                setInTransitTransfers(Array.isArray(r?.data) ? r.data : []);
+              }).catch(() => {});
+            }
+          });
+        }
+
+        try {
+          await barcodeScanAPI.create({
+            barcode: code,
+            product_id: item.product_id ?? item.id,
+            scan_mode: mode.key,
+            scanned_at: new Date().toISOString(),
+          });
+        } catch {}
+        return;
       }
 
       const toEan13From12 = (v) => {
@@ -430,53 +1161,45 @@ const BarcodeScan = () => {
         const pc = String(row?.product_code ?? '').trim().toUpperCase();
         return normalizedSet.has(bc) || normalizedSet.has(pc);
       };
-      const applyLocalFilters = (row) => {
-        if (activeType !== 'all' && (row?.product_type || '').toLowerCase() !== String(activeType).toLowerCase()) return false;
-        if (filterCategory && String(row?.category_id ?? row?.category?.category_id ?? '') !== String(filterCategory)) return false;
-        if (filterBrand && String(row?.brand_id ?? row?.brand?.brand_id ?? '') !== String(filterBrand)) return false;
-        if (filterModel && String(row?.model_id ?? row?.model?.model_id ?? row?.model?.id ?? '') !== String(filterModel)) return false;
-        return true;
-      };
 
       let item = null;
       let preloadedInventoryRows = null;
 
-      // 1) Backend exact match (barcode OR product_code) — avoids LIKE/pagination misses.
-      try {
-        const locForScan =
-          (scanMode || MODES[modeIndex])?.key === 'transfer' && transferSubmode === 'in'
-            ? txForm.to_location_id
-            : txForm.location_id;
-        const scanRes = await inventoryAPI.scanBarcode(code, locForScan || undefined);
-        const payload = scanRes?.data;
-        if (payload?.product) {
-          item = payload.product;
-          preloadedInventoryRows = Array.isArray(payload.inventory) ? payload.inventory : [];
+      const locForScan =
+        (scanMode || MODES[modeIndex])?.key === 'transfer' && transferSubmode === 'in'
+          ? txForm.to_location_id
+          : txForm.location_id;
+
+      // 1) Backend exact match — try every normalized variant (API used to see only the raw string).
+      for (const cand of candidates) {
+        if (item) break;
+        try {
+          const scanRes = await inventoryAPI.scanBarcode(cand, locForScan || undefined);
+          const payload = scanRes?.data;
+          if (payload?.product) {
+            item = payload.product;
+            preloadedInventoryRows = Array.isArray(payload.inventory) ? payload.inventory : [];
+          }
+        } catch {
+          /* try next candidate */
         }
-      } catch {
-        /* 404 / network — fall through to search */
       }
 
-      // 2) Products search + exact match on barcode or product_code
+      // 2) Product search fallback — do NOT apply category/type filters; wrong tab was hiding valid items.
       if (!item) {
-        const strictParams = { search: candidates[0], per_page: 50 };
-        if (activeType !== 'all') strictParams.product_type = activeType;
-        if (filterCategory) strictParams.category_id = filterCategory;
-        if (filterBrand) strictParams.brand_id = filterBrand;
-        if (filterModel) strictParams.model_id = filterModel;
-
-        const strictRes = await productsAPI.getAll(strictParams);
-        let strictItems = Array.isArray(strictRes.data) ? strictRes.data : [];
-        item = strictItems.find((row) => exactMatch(row) && applyLocalFilters(row));
+        const searchQ = candidates[0];
+        const strictRes = await productsAPI.getAll({ search: searchQ, per_page: 100 });
+        const strictItems = Array.isArray(strictRes.data) ? strictRes.data : [];
+        item = strictItems.find((row) => exactMatch(row));
 
         if (!item) {
-          const wideRes = await productsAPI.getAll({ search: candidates[0], per_page: 100 });
+          const wideRes = await productsAPI.getAll({ search: searchQ, per_page: 200 });
           const wideItems = Array.isArray(wideRes.data) ? wideRes.data : [];
           item = wideItems.find(exactMatch);
         }
 
         if (!item) {
-          const legacyRes = await itemsAPI.getAll({ search: candidates[0], per_page: 100 });
+          const legacyRes = await itemsAPI.getAll({ search: searchQ, per_page: 200 });
           const legacyItems = Array.isArray(legacyRes.data) ? legacyRes.data : [];
           item = legacyItems.find(exactMatch);
         }
@@ -540,7 +1263,7 @@ const BarcodeScan = () => {
         try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch {}
         return next;
       });
-      setBarcodeInput(code);
+      setBarcodeInput('');
       setTimeout(() => inputRef.current?.focus(), 50);
 
       /* ── save to DB (graceful fallback) ── */
@@ -559,128 +1282,251 @@ const BarcodeScan = () => {
       setScanning(false);
     }
   }, [
-    activeType,
-    filterCategory,
-    filterBrand,
-    filterModel,
     modeIndex,
     scanMode,
     scannedByName,
     txForm.location_id,
     txForm.to_location_id,
     txForm.pc_id,
+    txForm.quantity,
     transferSubmode,
     receivePoProductIds,
     receivePoLinesLoading,
+    mergeFreshInventoryForSession,
+    reloadRecentMovement,
+    loadPurchaseOrders,
   ]);
 
   useEffect(() => { handleScanRef.current = handleScan; }, [handleScan]);
+  useEffect(() => { scanningRef.current = scanning; }, [scanning]);
 
-  /* ── camera ──
-     ZXing's decodeFromConstraints resolves to undefined — there is no .stop() handle.
-     Use reader.reset() to stop tracks and the decode loop. Keep the <video> visible
-     while starting so videoWidth/height are non-zero (display:none breaks decoding on many browsers).
-  ── */
-  const stopReaderAndTracks = () => {
-    try {
-      readerRef.current?.reset();
-    } catch {
-      /* ignore */
-    }
-    readerRef.current = null;
-  };
+  useEffect(
+    () => () => {
+      if (inputScanTimerRef.current) clearTimeout(inputScanTimerRef.current);
+    },
+    [],
+  );
 
-  const startCamera = async () => {
-    setCameraError('');
-    const videoEl = videoRef.current;
-    if (!videoEl) {
-      setCameraError('Camera preview not ready. Close and re-open this screen, then try again.');
-      return;
-    }
-
-    stopReaderAndTracks();
-    setCameraActive(true);
-    await new Promise((r) => setTimeout(r, 50));
-
-    const hints = new Map();
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.QR_CODE,
-      BarcodeFormat.EAN_13,
-      BarcodeFormat.EAN_8,
-      BarcodeFormat.UPC_A,
-      BarcodeFormat.UPC_E,
-      BarcodeFormat.CODE_128,
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.ITF,
-    ]);
-
-    const decodeCallback = (result /* , err */) => {
-      if (!result) return;
-      const code = String(result.getText() || '').replace(/\s+/g, '').trim();
-      const now = Date.now();
-      if (code !== lastCodeRef.current || now - lastTimeRef.current > 3000) {
-        lastCodeRef.current = code;
-        lastTimeRef.current = now;
-        setLastDecoded(code);
-        handleScanRef.current?.(code);
-      }
-    };
-
-    const tryDecode = async (constraints) => {
+  const stopReaderAndTracks = useCallback(async () => {
+    const h = html5QrRef.current;
+    html5QrRef.current = null;
+    if (h) {
       try {
-        readerRef.current?.reset();
+        await h.stop();
+      } catch {
+        /* not running */
+      }
+      try {
+        h.clear();
       } catch {
         /* ignore */
       }
-      const reader = new BrowserMultiFormatReader(hints, 500);
-      readerRef.current = reader;
-      return reader.decodeFromConstraints(
-        { audio: false, video: constraints },
-        videoEl,
-        decodeCallback
+    }
+  }, []);
+
+  const applyDecodedBarcode = useCallback((decodedText) => {
+    if (scanningRef.current) return;
+    const code = String(decodedText || '').replace(/\s+/g, '').trim();
+    if (!code) return;
+    const now = Date.now();
+    if (code === lastCodeRef.current && now - lastTimeRef.current < CAMERA_SAME_CODE_MS) return;
+    lastCodeRef.current = code;
+    lastTimeRef.current = now;
+    setLastDecoded(code);
+    setBarcodeInput(code);
+    handleScanRef.current?.(code);
+  }, []);
+
+  const startHtml5OnDevice = useCallback(
+    async (deviceId) => {
+      await stopReaderAndTracks();
+      await new Promise((r) => setTimeout(r, 80));
+      const mount = typeof document !== 'undefined' ? document.getElementById(HTML5_QR_MOUNT_ID) : null;
+      if (!mount) throw new Error('Scanner mount not found.');
+      const h5 = new Html5Qrcode(HTML5_QR_MOUNT_ID, {
+        formatsToSupport: HTML5_FORMATS,
+        useBarCodeDetectorIfSupported: true,
+        verbose: false,
+      });
+      html5QrRef.current = h5;
+      await h5.start(
+        { deviceId: { exact: deviceId } },
+        getHtml5CameraScanConfig(),
+        applyDecodedBarcode,
+        () => {},
       );
-    };
+    },
+    [applyDecodedBarcode, stopReaderAndTracks],
+  );
+
+  /* ── camera (html5-qrcode: QR + common 1D/2D formats, works well on mobile browsers) ── */
+  const startCamera = async () => {
+    setCameraError('');
+    if (typeof document === 'undefined' || !document.getElementById(HTML5_QR_MOUNT_ID)) {
+      setCameraError('Scanner not ready. Close and re-open this screen, then try again.');
+      return;
+    }
 
     try {
-      try {
-        await tryDecode({
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        });
-      } catch (firstErr) {
-        // Laptops / desktops often lack "environment" camera — fall back to any camera.
-        try {
-          await tryDecode({ width: { ideal: 1280 }, height: { ideal: 720 } });
-        } catch {
-          await tryDecode(true);
+      const savedId = localStorage.getItem(CAMERA_STORAGE_KEY) || '';
+      if (savedId) {
+        const alreadyKnown = cameraDevices.find((d) => d.deviceId === savedId);
+        if (alreadyKnown && isLikelyVirtualCameraLabel(alreadyKnown.label)) {
+          localStorage.removeItem(CAMERA_STORAGE_KEY);
+          setSelectedCameraId('');
         }
       }
-    } catch (e) {
-      stopReaderAndTracks();
-      setCameraActive(false);
-      const msg = e?.message || String(e);
-      setCameraError(
-        /denied|NotAllowed|Permission/i.test(msg)
-          ? 'Camera blocked or denied. Allow camera for this site, or use a USB scanner / type the code and press Enter.'
-          : `Camera error: ${msg}. Use manual entry or USB scanner.`
-      );
-    }
-  };
-
-  const stopCamera = () => {
-    stopReaderAndTracks();
-    setCameraActive(false);
-  };
-
-  useEffect(() => () => {
-    try {
-      readerRef.current?.reset();
     } catch {
       /* ignore */
     }
-    readerRef.current = null;
+
+    await stopReaderAndTracks();
+    setCameraActive(true);
+    await new Promise((r) => setTimeout(r, 100));
+
+    try {
+      const allDevices = await enumerateVideoInputsWithLabels();
+      const devices = sortVideoDevicesPhysicalFirst(allDevices);
+      setCameraDevices(devices);
+
+      const physicalOnly = allDevices.filter((d) => !isLikelyVirtualCameraLabel(d.label));
+      const virtualOnly = allDevices.filter((d) => isLikelyVirtualCameraLabel(d.label));
+      const selectionPool =
+        physicalOnly.length > 0
+          ? sortPhysicalCamerasDefaultFirst(physicalOnly)
+          : sortVideoDevicesPhysicalFirst(allDevices);
+
+      const resolvedId = pickPreferredCameraDeviceId(selectionPool, selectedCameraId);
+      if (!resolvedId) throw new Error('No usable camera device.');
+
+      setSelectedCameraId(resolvedId);
+      try {
+        localStorage.setItem(CAMERA_STORAGE_KEY, resolvedId);
+      } catch {
+        /* ignore */
+      }
+
+      const physicalSorted =
+        physicalOnly.length > 0 ? sortPhysicalCamerasDefaultFirst(physicalOnly) : [];
+      const tryOrder =
+        physicalOnly.length > 0
+          ? [
+              resolvedId,
+              ...physicalSorted.map((d) => d.deviceId).filter((id) => id !== resolvedId),
+              ...virtualOnly.map((d) => d.deviceId),
+            ]
+          : [
+              resolvedId,
+              ...allDevices.map((d) => d.deviceId).filter((id) => id !== resolvedId),
+            ];
+      const uniqueTry = [...new Set(tryOrder)];
+      let lastErr;
+      let opened = false;
+      for (const id of uniqueTry) {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            if (attempt > 0) await new Promise((r) => setTimeout(r, 400));
+            await startHtml5OnDevice(id);
+            opened = true;
+            break;
+          } catch (err) {
+            lastErr = err;
+            await stopReaderAndTracks();
+            const retryable =
+              attempt === 0 &&
+              (err?.name === 'NotReadableError' || err?.name === 'TrackStartError');
+            if (!retryable) break;
+          }
+        }
+        if (opened) break;
+      }
+      if (!opened) throw lastErr || new Error('Could not open any camera.');
+    } catch (e) {
+      await stopReaderAndTracks();
+      setCameraActive(false);
+      setCameraError(
+        `${cameraAccessErrorMessage(e)} ${
+          isAdminRole
+            ? 'You can still type or use a USB barcode wedge in the field below.'
+            : 'Use the camera to scan, or ask a System Administrator if you need manual entry.'
+        }`,
+      );
+    }
+  };
+
+  const onCameraDeviceChange = async (e) => {
+    const id = e.target.value;
+    setSelectedCameraId(id);
+    try {
+      localStorage.setItem(CAMERA_STORAGE_KEY, id);
+    } catch {
+      /* ignore */
+    }
+    if (!cameraActive) return;
+    try {
+      await startHtml5OnDevice(id);
+    } catch (err) {
+      setCameraError(`Could not switch camera: ${cameraAccessErrorMessage(err)}`);
+      await stopReaderAndTracks();
+      setCameraActive(false);
+    }
+  };
+
+  const stopCamera = async () => {
+    await stopReaderAndTracks();
+    setCameraActive(false);
+  };
+
+  /** Like a phone “shutter”: decode the current frame once (helps when auto-scan misses). */
+  const manualFrameScan = useCallback(async () => {
+    const mountEl = typeof document !== 'undefined' ? document.getElementById(HTML5_QR_MOUNT_ID) : null;
+    const v = mountEl?.querySelector('video');
+    if (!cameraActive || !v || v.readyState < 2 || v.videoWidth < 48) {
+      toast.info('Start the camera and wait until you see a live preview.');
+      return;
+    }
+    if (scanningRef.current) {
+      toast.info('Still processing the previous scan — try again in a moment.');
+      return;
+    }
+    let code = null;
+    if (hasNativeBarcodeDetector()) {
+      try {
+        const detector = new window.BarcodeDetector({ formats: NATIVE_BARCODE_FORMATS });
+        const codes = await detector.detect(v);
+        const raw = codes?.[0]?.rawValue;
+        if (raw) code = String(raw).replace(/\s+/g, '').trim();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!code) code = tryDecodeVideoCenterCropZxing(v);
+    if (!code || code.length < 2) {
+      toast.warning('No barcode found. Center the code in the frame, add light, and tap Scan again.');
+      return;
+    }
+    const now = Date.now();
+    lastCodeRef.current = code;
+    lastTimeRef.current = now;
+    setLastDecoded(code);
+    setBarcodeInput(code);
+    handleScanRef.current?.(code);
+  }, [cameraActive]);
+
+  useEffect(() => {
+    if (!scanResult) return;
+    const t = requestAnimationFrame(() => {
+      scanResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => cancelAnimationFrame(t);
+  }, [scanResult]);
+
+  useEffect(() => () => {
+    const h = html5QrRef.current;
+    html5QrRef.current = null;
+    if (h) {
+      h.stop().catch(() => {});
+    }
   }, []);
 
   /* ── select a mode and enter scan view ── */
@@ -693,7 +1539,8 @@ const BarcodeScan = () => {
   };
 
   const exitScanMode = () => {
-    stopCamera();
+    void stopCamera();
+    setCameraDevices([]);
     setScanMode(null);
     setScanResult(null);
     setBarcodeInput('');
@@ -707,20 +1554,52 @@ const BarcodeScan = () => {
     return inv?.quantity ?? inv?.qty ?? null;
   };
 
-  const availableAtLocation = (inv) => {
-    if (!inv) return 0;
-    const a = inv.available_quantity;
-    const q = inv.quantity_on_hand;
-    if (a != null && a !== '') return Math.max(0, Number(a));
-    if (q != null && q !== '') return Math.max(0, Number(q));
-    return Math.max(0, Number(inv.quantity ?? inv.qty ?? 0));
+  /** Sum on-hand across inventory rows (Item Master / Product Management basis). */
+  const sumInventoryOnHand = (rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    let sum = 0;
+    for (const r of rows) {
+      const q = r?.quantity_on_hand;
+      if (q != null && q !== '') sum += Number(q);
+    }
+    return Number.isFinite(sum) ? sum : null;
   };
+
+  const availableAtLocation = availableQtyAtInventoryRow;
   const price  = (item) => Number(item?.unit_price ?? item?.price ?? 0);
-  const branch    = (inv) => inv?.branch?.branch_name ?? inv?.branch_name ?? null;
-  const warehouse = (inv) => inv?.warehouse?.warehouse_name ?? inv?.location?.location_name ?? inv?.location_name ?? null;
-  const locCode   = (inv) => inv?.location_code ?? inv?.shelf_code ?? inv?.aisle ?? null;
+  const branch = (inv) =>
+    inv?.location?.branch?.name
+    ?? inv?.location?.branch?.branch_name
+    ?? inv?.branch?.name
+    ?? inv?.branch?.branch_name
+    ?? inv?.branch_name
+    ?? null;
+  const warehouse = (inv) => inv?.warehouse?.warehouse_name ?? inv?.location?.location_name ?? inv?.location?.name ?? inv?.location_name ?? null;
+  /** Storage / site name (API nests under location; shelf codes are optional). */
+  const locCode = (inv) =>
+    inv?.location?.location_name
+    ?? inv?.location?.name
+    ?? inv?.location_code
+    ?? inv?.shelf_code
+    ?? inv?.aisle
+    ?? null;
   const stockSt   = (inv) => inv?.status?.status_name ?? inv?.stock_status ?? null;
   const isLow     = (inv) => (stockSt(inv) || '').toLowerCase().includes('low');
+
+  /**
+   * Status chip for scan result / history: Issue Out is always a stock-out transaction.
+   * "In Stock" (and inventory row status) applies to receiving, audit, transfer context, etc.
+   */
+  const getStatusChipDisplay = (modeKey, inv, transactionEngineApplied) => {
+    if (modeKey === 'issue-out') {
+      if (transactionEngineApplied) {
+        return { label: 'Stock Out', variant: 'stock-out' };
+      }
+      return { label: 'Pending issuance', variant: 'pending-issue' };
+    }
+    const label = stockSt(inv) || 'In Stock';
+    return { label, variant: isLow(inv) ? 'low' : '' };
+  };
   const getLocationId = (inv) => inv?.location_id ?? inv?.location?.id ?? inv?.location?.location_id ?? '';
   const getLocationName = useCallback((locationId) => {
     const hit = locations.find((l) => String(l.id ?? l.location_id) === String(locationId));
@@ -731,17 +1610,34 @@ const BarcodeScan = () => {
     if (!scanResult) return;
     const inv = scanResult.inventory;
     const inferredLocation = inv ? getLocationId(inv) : '';
-    setTxForm((prev) => ({
-      ...prev,
-      quantity: 1,
-      condition: 'Good',
-      location_id: inferredLocation ? String(inferredLocation) : (prev.location_id || ''),
-      to_location_id: scanResult.modeKey === 'transfer' ? prev.to_location_id : '',
-      pending_transfer_id: scanResult.modeKey === 'transfer' ? prev.pending_transfer_id : '',
-      ship_transfer_first: scanResult.modeKey === 'transfer' ? prev.ship_transfer_first : true,
-      pc_id: prev.pc_id || '',
-      adjustment_direction: 'deduct',
-    }));
+    const issuePreview = scanResult.modeKey === 'issue-out' && !scanResult.transactionEngineApplied;
+    const previewKey = issuePreview ? `${scanResult.barcode}\0${scanResult.scannedAt}` : '';
+
+    setTxForm((prev) => {
+      let nextQty;
+      if (issuePreview) {
+        if (issuancePreviewKeyRef.current !== previewKey) {
+          issuancePreviewKeyRef.current = previewKey;
+          nextQty = 1;
+        } else {
+          nextQty = prev.quantity;
+        }
+      } else {
+        issuancePreviewKeyRef.current = '';
+        nextQty = 1;
+      }
+      return {
+        ...prev,
+        quantity: nextQty,
+        condition: 'Good',
+        location_id: inferredLocation ? String(inferredLocation) : (prev.location_id || ''),
+        to_location_id: scanResult.modeKey === 'transfer' ? prev.to_location_id : '',
+        pending_transfer_id: scanResult.modeKey === 'transfer' ? prev.pending_transfer_id : '',
+        ship_transfer_first: scanResult.modeKey === 'transfer' ? prev.ship_transfer_first : true,
+        pc_id: prev.pc_id || '',
+        adjustment_direction: 'deduct',
+      };
+    });
   }, [scanResult]);
 
   const currentModeKey = (scanMode || MODES[modeIndex])?.key;
@@ -775,30 +1671,29 @@ const BarcodeScan = () => {
     });
   }, [txForm.location_id, scanResult?.inventoryRows]);
 
-  const refreshCurrentResult = useCallback(async () => {
-    if (!scanResult?.item) return;
-    try {
-      const invRes = await inventoryAPI.getAll({
-        product_id: scanResult.item.product_id ?? scanResult.item.id,
-        per_page: 500,
-      });
-      const invList = Array.isArray(invRes.data) ? invRes.data : [];
-      const latestInventory = pickInventoryForLocation(invList, txForm.location_id)
-        || pickInventoryForLocation(invList, '');
-      setScanResult((prev) => (prev ? { ...prev, inventory: latestInventory, inventoryRows: invList } : prev));
-      setScanHistory((prev) => prev.map((h) => (
-        h.barcode === scanResult.barcode && h.scannedAt === scanResult.scannedAt
-          ? { ...h, inventory: latestInventory, inventoryRows: invList }
-          : h
-      )));
-    } catch {}
-  }, [scanResult, txForm.location_id]);
-
   const executeModeAction = useCallback(async () => {
     if (!scanResult?.item) return;
     const mode = scanMode || MODES[modeIndex];
+    if (scanResult.transactionEngineApplied) {
+      toast.info('Inventory was already updated when you scanned (server transaction engine). No need to post again.');
+      return;
+    }
+    if (mode.key === 'audit') {
+      toast.info('Audit is read-only; the verification was logged when you scanned.');
+      return;
+    }
     const productId = scanResult.item.product_id ?? scanResult.item.id;
-    const qtyNum = Math.max(1, Number(txForm.quantity) || 1);
+    const qtyNum = mode.key === 'issue-out'
+      ? (() => {
+          const n = Number(txForm.quantity);
+          if (!Number.isInteger(n) || n < 1) return null;
+          return n;
+        })()
+      : Math.max(1, Math.floor(Number(txForm.quantity)) || 1);
+    if (qtyNum === null) {
+      toast.error('Enter a whole-number quantity of at least 1.');
+      return;
+    }
     const today = new Date().toISOString().slice(0, 10);
     const locationId = txForm.location_id || String(getLocationId(scanResult.inventory) || '');
 
@@ -823,72 +1718,156 @@ const BarcodeScan = () => {
     setTxSubmitting(true);
     try {
       if (mode.key === 'receive-po') {
-        if (!txForm.pc_id) {
-          toast.error('Select a Purchase Order for Receive PO.');
-          return;
-        }
         if (!locationId) {
           toast.error('Select a location for Receive PO.');
           return;
         }
-        const selectedPo = purchaseOrders.find((p) => String(p.po_id ?? p.id) === String(txForm.pc_id));
-        const blockReason = getReceivePoBlockReason(selectedPo);
-        if (blockReason) {
-          toast.error(blockReason);
-          return;
+        if (txForm.pc_id) {
+          const selectedPo = purchaseOrders.find((p) => String(p.po_id ?? p.id) === String(txForm.pc_id));
+          const blockReason = getReceivePoBlockReason(selectedPo);
+          if (blockReason) {
+            toast.error(blockReason);
+            return;
+          }
+          const linePid = Number(productId);
+          if (!receivePoProductIds.includes(linePid)) {
+            toast.error('This product is not on the selected Purchase Order.');
+            return;
+          }
+          const res = await receivingsAPI.create({
+            pc_id: txForm.pc_id,
+            location_id: locationId,
+            receiving_number: `RCV-${Date.now()}`,
+            receiving_date: today,
+            total_quantity_damaged: 0,
+            details: [
+              {
+                product_id: productId,
+                quantity_amount: qtyNum,
+                condition: txForm.condition || 'Good',
+              },
+            ],
+          });
+          toast.success('Receive PO posted successfully.');
+          setTxLogs((prev) => [{
+            id: Date.now(),
+            mode: mode.label,
+            ref: res?.data?.receiving_number || res?.receiving_number || 'Posted',
+            barcode: scanResult.barcode,
+            qty: qtyNum,
+            location: getLocationName(locationId),
+            at: new Date().toLocaleTimeString(),
+          }, ...prev].slice(0, 8));
+        } else {
+          const engRes = await inventoryAPI.scanTransaction({
+            barcode: scanResult.barcode,
+            transaction_type: 'receiving',
+            location_id: Number(locationId),
+            quantity: qtyNum,
+          });
+          const eng = engRes?.data;
+          if (!eng || typeof eng !== 'object' || eng.action === 'rejected') {
+            toast.error(eng?.reason || 'Receiving failed.');
+            return;
+          }
+          (Array.isArray(eng.warnings) ? eng.warnings : []).forEach((w) => toast.warning(w));
+          const p = eng.product;
+          if (!p) {
+            toast.error('No product data returned.');
+            return;
+          }
+          const item = { ...p, id: p.product_id };
+          const inventoryRows = Array.isArray(eng.inventory) ? eng.inventory : [];
+          const invPicked = pickInventoryForLocation(inventoryRows, locationId)
+            || pickInventoryForLocation(inventoryRows, '');
+          setScanResult((prev) => (prev ? {
+            ...prev,
+            item,
+            inventory: invPicked,
+            inventoryRows,
+            transactionEngineApplied: true,
+          } : prev));
+          setScanHistory((prev) => {
+            const next = prev.map((h) => (
+              h.barcode === scanResult.barcode && h.scannedAt === scanResult.scannedAt
+                ? {
+                  ...h,
+                  item,
+                  inventory: invPicked,
+                  inventoryRows,
+                  transactionEngineApplied: true,
+                }
+                : h
+            ));
+            try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch { /* ignore */ }
+            return next;
+          });
+          toast.success('Receiving posted successfully.');
+          setTxLogs((prev) => [{
+            id: Date.now(),
+            mode: mode.label,
+            ref: eng?.receiving_number || eng?.reference || 'Receiving',
+            barcode: scanResult.barcode,
+            qty: qtyNum,
+            location: getLocationName(locationId),
+            at: new Date().toLocaleTimeString(),
+          }, ...prev].slice(0, 8));
         }
-        const linePid = Number(productId);
-        if (!receivePoProductIds.includes(linePid)) {
-          toast.error('This product is not on the selected Purchase Order.');
-          return;
-        }
-        const res = await receivingsAPI.create({
-          pc_id: txForm.pc_id,
-          location_id: locationId,
-          receiving_number: `RCV-${Date.now()}`,
-          receiving_date: today,
-          total_quantity_damaged: 0,
-          details: [
-            {
-              product_id: productId,
-              quantity_amount: qtyNum,
-              condition: txForm.condition || 'Good',
-            },
-          ],
-        });
-        toast.success('Receive PO posted successfully.');
-        setTxLogs((prev) => [{
-          id: Date.now(),
-          mode: mode.label,
-          ref: res?.data?.receiving_number || res?.receiving_number || 'Posted',
-          barcode: scanResult.barcode,
-          qty: qtyNum,
-          location: getLocationName(locationId),
-          at: new Date().toLocaleTimeString(),
-        }, ...prev].slice(0, 8));
       } else if (mode.key === 'issue-out') {
         if (!locationId) {
           toast.error('Select a location for Issue Out.');
           return;
         }
-        const res = await issuancesAPI.create({
-          location_id: locationId,
-          issuance_date: today,
-          issuance_type: 'Operations',
-          purpose: `Inventory Operation scan (${scanResult.barcode})`,
-          details: [
-            {
-              product_id: productId,
-              quantity_issued: qtyNum,
-              condition_issued: txForm.condition || 'Good',
-            },
-          ],
+        const engRes = await inventoryAPI.scanTransaction({
+          barcode: scanResult.barcode,
+          transaction_type: 'issuance',
+          location_id: Number(locationId),
+          quantity: qtyNum,
         });
-        toast.success('Issue Out posted successfully.');
+        const eng = engRes?.data;
+        if (!eng || typeof eng !== 'object' || eng.action === 'rejected') {
+          toast.error(eng?.reason || 'Issuance failed.');
+          return;
+        }
+        (Array.isArray(eng.warnings) ? eng.warnings : []).forEach((w) => toast.warning(w));
+        const p = eng.product;
+        if (!p) {
+          toast.error('No product data returned.');
+          return;
+        }
+        const item = { ...p, id: p.product_id };
+        const inventoryRows = Array.isArray(eng.inventory) ? eng.inventory : [];
+        const invPicked = pickInventoryForLocation(inventoryRows, locationId)
+          || pickInventoryForLocation(inventoryRows, '');
+        setScanResult((prev) => (prev ? {
+          ...prev,
+          item,
+          inventory: invPicked,
+          inventoryRows,
+          transactionEngineApplied: true,
+          issuedQuantity: qtyNum,
+        } : prev));
+        setScanHistory((prev) => {
+          const next = prev.map((h) => (
+            h.barcode === scanResult.barcode && h.scannedAt === scanResult.scannedAt
+              ? {
+                ...h,
+                item,
+                inventory: invPicked,
+                inventoryRows,
+                transactionEngineApplied: true,
+                issuedQuantity: qtyNum,
+              }
+              : h
+          ));
+          try { localStorage.setItem('bs_scan_history', JSON.stringify(next)); } catch { /* ignore */ }
+          return next;
+        });
+        toast.success(`Issued ${qtyNum} unit(s). Inventory updated.`);
         setTxLogs((prev) => [{
           id: Date.now(),
           mode: mode.label,
-          ref: res?.data?.issuance_number || res?.issuance_number || 'Posted',
+          ref: `Issued ${qtyNum} u`,
           barcode: scanResult.barcode,
           qty: qtyNum,
           location: getLocationName(locationId),
@@ -991,13 +1970,26 @@ const BarcodeScan = () => {
           at: new Date().toLocaleTimeString(),
         }, ...prev].slice(0, 8));
       }
-      await refreshCurrentResult();
+      await mergeFreshInventoryForSession(
+        productId,
+        txForm.location_id,
+        scanResult.barcode,
+        scanResult.scannedAt,
+      );
+      reloadRecentMovement();
+      if (mode.key === 'receive-po') loadPurchaseOrders();
+      if (mode.key === 'transfer' && !isTransferIn) {
+        try {
+          const trRes = await transfersAPI.getAll({ per_page: 100 });
+          setInTransitTransfers(Array.isArray(trRes?.data) ? trRes.data : []);
+        } catch { /* ignore */ }
+      }
     } catch (err) {
       toast.error(err.message || 'Failed to execute inventory action.');
     } finally {
       setTxSubmitting(false);
     }
-  }, [scanResult, scanMode, modeIndex, txForm, scannedByName, getLocationName, refreshCurrentResult, transferSubmode, purchaseOrders, receivePoProductIds]);
+  }, [scanResult, scanMode, modeIndex, txForm, scannedByName, getLocationName, mergeFreshInventoryForSession, reloadRecentMovement, loadPurchaseOrders, transferSubmode, purchaseOrders, receivePoProductIds]);
 
   /* ── mode-aware field labels ── */
   const getModeLabels = (modeKey) => {
@@ -1005,6 +1997,7 @@ const BarcodeScan = () => {
       case 'receive-po': return { branch: 'Receiving Branch', warehouse: 'Destination Warehouse', location: 'Storage Location' };
       case 'transfer':   return { branch: 'Destination (Showroom)', warehouse: 'From Warehouse',       location: 'Transfer Location' };
       case 'issue-out':  return { branch: 'Issued To (Branch)',     warehouse: 'From Warehouse',       location: 'Current Location' };
+      case 'audit':      return { branch: 'Branch',                 warehouse: 'Warehouse',            location: 'Audit location' };
       case 'adjust':
       default:           return { branch: 'Branch',                 warehouse: 'Warehouse',            location: 'Location' };
     }
@@ -1013,12 +2006,13 @@ const BarcodeScan = () => {
   const receivePoSetupGrid = (
     <div className="bs-action-grid">
       <div className="bs-filter-col">
-        <label>QUANTITY</label>
+        <label title="Per scan: full amount for consumables; appliances always add 1 unit per scan.">QUANTITY</label>
         <input
           type="number"
           min="1"
           value={txForm.quantity}
           onChange={(e) => setTxForm((p) => ({ ...p, quantity: e.target.value }))}
+          title="Consumables: units added per scan. Appliances: treated as 1 (serialized)."
         />
       </div>
       <div className="bs-filter-col">
@@ -1045,16 +2039,64 @@ const BarcodeScan = () => {
         </select>
       </div>
       <div className="bs-filter-col">
-        <label>PURCHASE ORDER</label>
+        <label>PURCHASE ORDER (OPTIONAL)</label>
         <select
           value={txForm.pc_id}
           onChange={(e) => setTxForm((p) => ({ ...p, pc_id: e.target.value }))}
         >
-          <option value="">Select PO</option>
-          {purchaseOrders.map((po) => (
-            <option key={po.po_id ?? po.id} value={po.po_id ?? po.id}>{po.po_number}</option>
+          <option value="">None — receive without PO</option>
+          {purchaseOrders.map((po) => {
+            const pid = po.po_id ?? po.id;
+            const label = po.po_number || po.pc_number || (pid != null ? `PO #${pid}` : '—');
+            return (
+              <option key={pid} value={pid}>{label}</option>
+            );
+          })}
+        </select>
+      </div>
+    </div>
+  );
+
+  const issueOutSetupGrid = (
+    <div className="bs-action-grid">
+      <div className="bs-filter-col">
+        <label title="Whole units to issue; validated against available stock after scan.">QUANTITY</label>
+        <input
+          type="number"
+          min="1"
+          step="1"
+          inputMode="numeric"
+          value={txForm.quantity}
+          onChange={(e) => setTxForm((p) => ({ ...p, quantity: e.target.value }))}
+        />
+      </div>
+      <div className="bs-filter-col">
+        <label>CONDITION</label>
+        <select
+          value={txForm.condition}
+          onChange={(e) => setTxForm((p) => ({ ...p, condition: e.target.value }))}
+        >
+          {['Good', 'Fair', 'Damaged', 'Defective'].map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <div className="bs-filter-col">
+        <label>LOCATION <span className="bs-required-mark">*</span></label>
+        <select
+          className={!txForm.location_id ? 'bs-select-invalid' : undefined}
+          value={txForm.location_id}
+          onChange={(e) => setTxForm((p) => ({ ...p, location_id: e.target.value }))}
+          aria-invalid={!txForm.location_id}
+        >
+          <option value="">Select</option>
+          {locations.map((l) => (
+            <option key={l.id ?? l.location_id} value={l.id ?? l.location_id}>
+              {l.location_name || l.name}
+            </option>
           ))}
         </select>
+        {!txForm.location_id && (
+          <p className="bs-field-hint bs-field-hint--error">Required before scanning — choose where stock is issued from.</p>
+        )}
       </div>
     </div>
   );
@@ -1113,11 +2155,14 @@ const BarcodeScan = () => {
                         }}>
                           {h.mode}
                         </span>
-                        {h.inventory && (
-                          <span className={`bs-status-chip${isLow(h.inventory) ? ' low' : ''}`}>
-                            {stockSt(h.inventory) || 'In Stock'}
-                          </span>
-                        )}
+                        {h.inventory && (() => {
+                          const st = getStatusChipDisplay(h.modeKey, h.inventory, h.transactionEngineApplied);
+                          return (
+                            <span className={`bs-status-chip${st.variant ? ` ${st.variant}` : ''}`}>
+                              {st.label}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -1192,13 +2237,10 @@ const BarcodeScan = () => {
             </button>
           </div>
 
-          {/* video always in DOM so ZXing can access videoRef before camera starts */}
-          <video
-            ref={videoRef}
-            className="bs-video"
-            autoPlay
-            muted
-            playsInline
+          {/* html5-qrcode injects its preview video inside this mount */}
+          <div
+            id={HTML5_QR_MOUNT_ID}
+            className="bs-html5qrcode-mount"
             style={{ display: cameraActive ? 'block' : 'none' }}
           />
           {!cameraActive && (
@@ -1219,8 +2261,24 @@ const BarcodeScan = () => {
           {/* scan line */}
           {cameraActive && <div className="bs-scan-line"/>}
 
+          {cameraActive && (
+            <p className="bs-cam-hint">Position the barcode in the frame. Scanning runs automatically — or tap the white button to capture now.</p>
+          )}
+
           {/* camera error */}
           {cameraError && <p className="bs-cam-err">{cameraError}</p>}
+
+          {cameraActive && (
+            <button
+              type="button"
+              className="bs-cam-shutter"
+              onClick={() => manualFrameScan()}
+              aria-label="Scan barcode from current camera frame"
+            >
+              <span className="bs-cam-shutter-inner" />
+              <span className="bs-cam-shutter-label">Scan</span>
+            </button>
+          )}
 
           {/* camera button */}
           {cameraActive
@@ -1240,25 +2298,123 @@ const BarcodeScan = () => {
           </button>
         </div>
 
+        {cameraDevices.length > 0 && (
+          <div className="bs-cam-select-bar">
+            <label htmlFor="bs-camera-device" className="bs-cam-select-bar-label">Camera</label>
+            <select
+              id="bs-camera-device"
+              className="bs-cam-select-bar-input"
+              value={cameraSelectValue}
+              onChange={onCameraDeviceChange}
+            >
+              {cameraDevices.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label}
+                  {isLikelyVirtualCameraLabel(d.label) ? ' (virtual)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {currentModeKey === 'issue-out' && (
+          <div className="bs-action-card bs-issue-out-setup" style={{ marginTop: 0, marginBottom: 20 }}>
+            <div className="bs-action-head">
+              <span className="bs-action-title">Issue Out — setup</span>
+              <span className="bs-action-sub">
+                Fill in <strong>quantity</strong>, <strong>condition</strong>, and <strong>location</strong> first, then scan the product barcode.
+                Stock is reduced when you tap <strong>Issue stock out</strong> after the scan (catalog barcodes). Quantity must be a whole number ≥ 1 and cannot exceed available stock at the selected location.
+              </span>
+            </div>
+            {issueOutSetupGrid}
+          </div>
+        )}
+
         {currentModeKey === 'receive-po' && (
           <div className="bs-action-card" style={{ marginTop: 0, marginBottom: 20 }}>
             <div className="bs-action-head">
               <span className="bs-action-title">Receive PO — setup</span>
               <span className="bs-action-sub">
-                Piliin muna ang purchase order at location; pagkatapos mag-scan ng barcode sa ibaba.
-                {receivePoLinesLoading && ' (Naglo-load ang line items ng PO…)'}
+                Select a storage location first, then scan. Purchase order is optional — leave it empty to receive without a PO.
+                {' '}When a PO is selected, only products on that PO are accepted. Each valid scan updates inventory on the server.
+                {' '}Quantity applies to <strong>consumables</strong> (bulk items); <strong>appliances</strong> are received one unit per scan (serialized).
+                {receivePoLinesLoading && ' (Loading PO line items…)'}
                 {!receivePoLinesLoading && txForm.pc_id && receivePoProductIds.length > 0
-                  && ` Tanging ${receivePoProductIds.length} product(s) sa PO na ito ang tatanggapin ng scan.`}
+                  && ` Only ${receivePoProductIds.length} product(s) on this PO can be accepted by scan.`}
               </span>
             </div>
             {receivePoSetupGrid}
           </div>
         )}
 
-        {/* ── barcode input ── */}
+        {currentModeKey === 'audit' && (
+          <div className="bs-action-card" style={{ marginTop: 0, marginBottom: 20, borderColor: '#c7d2fe', background: '#f5f7ff' }}>
+            <div className="bs-action-head">
+              <span className="bs-action-title">Audit — setup</span>
+              <span className="bs-action-sub">
+                Select the location to verify, then scan barcodes. Stock is not changed; each scan is logged for traceability.
+              </span>
+            </div>
+            <div className="bs-action-grid">
+              <div className="bs-filter-col">
+                <label>LOCATION</label>
+                <select
+                  value={txForm.location_id}
+                  onChange={(e) => setTxForm((p) => ({ ...p, location_id: e.target.value }))}
+                >
+                  <option value="">Select</option>
+                  {locations.map((l) => (
+                    <option key={l.id ?? l.location_id} value={l.id ?? l.location_id}>
+                      {l.location_name || l.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── barcode input: camera for everyone; manual typing / wedge typing only for System Administrator ── */}
         <div className="bs-input-section">
           <p className="bs-input-title">Barcode / QR Scanner</p>
-          <p className="bs-input-sub">Enter or scan a product barcode or QR code</p>
+          {cameraBlockedPlainHttp && (
+            <p
+              className="bs-input-sub"
+              style={{
+                background: '#fff7ed',
+                border: '1px solid #fdba74',
+                borderRadius: 8,
+                padding: '10px 12px',
+                color: '#9a3412',
+                marginBottom: 10,
+              }}
+            >
+              <strong>Camera:</strong> The webcam will not work on plain <code style={{ fontSize: '0.9em' }}>http://</code> when the app is opened from a non-local address (e.g. <code style={{ fontSize: '0.9em' }}>http://192.168.x.x</code>).
+              Use <strong>http://localhost:PORT</strong> or <strong>HTTPS</strong>
+              {isAdminRole ? (
+                <>, or type / use a USB wedge scanner in the field below.</>
+              ) : (
+                <> so the camera can be used. Manual entry is not available for your role on this network setup.</>
+              )}
+            </p>
+          )}
+          <p className="bs-input-sub">
+            {isAdminRole
+              ? 'Camera decodes automatically when the code is in view. Admins may also type or use a USB barcode wedge in the field — short pause or Enter / Tab submits.'
+              : 'Camera decodes automatically when the code is in view. Manual typing and USB wedge entry are disabled; use the camera only.'}
+          </p>
+          <p className="bs-input-sub" style={{ marginTop: -6, fontSize: 12, color: '#64748b' }}>
+            {currentModeKey === 'issue-out' ? (
+              <>
+                In <strong>Issue Out</strong>, use the <strong>setup</strong> above (quantity, condition, location), then scan. After the product appears, tap <strong>Issue stock out</strong> to deduct the quantity you entered. Unit <strong>serials</strong> may post immediately when the code is not a catalog barcode.
+              </>
+            ) : (
+              <>
+                Tip: In <strong>Receive PO</strong> mode, pick a <strong>location</strong> first; PO is optional.
+                Unknown barcodes can be registered from the prompt. For lookup-only, use <strong>Audit</strong>.
+              </>
+            )}
+          </p>
           <div className="bs-input-row">
             <div className="bs-input-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="1.5" width="16" height="16">
@@ -1271,16 +2427,51 @@ const BarcodeScan = () => {
               ref={inputRef}
               type="text"
               className="bs-barcode-input"
-              placeholder="Scan barcode or QR code..."
+              placeholder={isAdminRole ? 'Scan with camera, type, or USB wedge scanner…' : 'Decoded value appears here (camera only)'}
               value={barcodeInput}
-              onChange={(e) => setBarcodeInput(e.target.value)}
+              readOnly={!isAdminRole}
+              onPaste={!isAdminRole ? (e) => e.preventDefault() : undefined}
+              onChange={
+                isAdminRole
+                  ? (e) => {
+                      const v = e.target.value;
+                      setBarcodeInput(v);
+                      if (inputScanTimerRef.current) clearTimeout(inputScanTimerRef.current);
+                      inputScanTimerRef.current = setTimeout(() => {
+                        inputScanTimerRef.current = null;
+                        const raw = String(inputRef.current?.value ?? '')
+                          .replace(/\s+/g, '')
+                          .trim();
+                        if (!raw || scanningRef.current) return;
+                        if (raw.length < 4) return;
+                        handleScanRef.current?.(raw);
+                      }, 200);
+                    }
+                  : () => {}
+              }
               autoComplete="off"
+              inputMode="text"
+              enterKeyHint="done"
               onKeyDown={(e) => {
-                if (e.key !== 'Enter') return;
-                e.preventDefault();
-                // USB scanners send Enter before React state catches the last digits — read DOM value.
-                const raw = (e.currentTarget?.value ?? barcodeInput ?? '').trim();
-                if (raw) handleScan(raw);
+                if (isAdminRole && (e.key === 'Enter' || e.key === 'Tab')) {
+                  if (inputScanTimerRef.current) {
+                    clearTimeout(inputScanTimerRef.current);
+                    inputScanTimerRef.current = null;
+                  }
+                  const raw = String(e.currentTarget?.value ?? barcodeInput ?? '')
+                    .replace(/\s+/g, '')
+                    .trim();
+                  if (raw) {
+                    e.preventDefault();
+                    handleScan(raw);
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                  }
+                  return;
+                }
+                if (!isAdminRole && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                  e.preventDefault();
+                }
               }}
               disabled={scanning}
               autoFocus
@@ -1368,7 +2559,7 @@ const BarcodeScan = () => {
             ? getLocationName(txForm.location_id)
             : '';
           return (
-            <div className="bs-result-wrap">
+            <div className="bs-result-wrap" ref={scanResultRef}>
             <div className="bs-result-card">
               <div className="bs-result-head">
                 <div className="bs-check-circle">
@@ -1385,9 +2576,32 @@ const BarcodeScan = () => {
                   </div>
                   <div className="bs-result-cell">
                     <span className="bs-rk">Category</span>
-                    <span className="bs-rv">{scanResult.item.category?.category_name || '—'}</span>
+                    <span className="bs-rv">
+                      {scanResult.item.category?.category_name
+                        || scanResult.item.category_name
+                        || '—'}
+                    </span>
                   </div>
-                  {scanResult.inventory && (
+                  {scanResult.auditSnapshot ? (
+                    <>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Location</span>
+                        <span className="bs-rv">{scanResult.auditSnapshot.location_name || '—'}</span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">On hand (this location)</span>
+                        <span className="bs-rv">{scanResult.auditSnapshot.current_stock ?? '—'} units</span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Unit Price</span>
+                        <span className="bs-rv">₱{price(scanResult.item).toLocaleString()}</span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Audit</span>
+                        <span className="bs-rv" style={{ color: '#4338ca', fontWeight: 600 }}>Verified (no stock change)</span>
+                      </div>
+                    </>
+                  ) : scanResult.inventory ? (
                     <>
                       <div className="bs-result-cell">
                         <span className="bs-rk">{lbl.branch}</span>
@@ -1407,12 +2621,21 @@ const BarcodeScan = () => {
                       </div>
                       <div className="bs-result-cell">
                         <span className="bs-rk">Status</span>
-                        <span className={`bs-status-chip${isLow(scanResult.inventory) ? ' low' : ''}`}>
-                          {stockSt(scanResult.inventory) || 'In Stock'}
-                        </span>
+                        {(() => {
+                          const st = getStatusChipDisplay(
+                            scanResult.modeKey,
+                            scanResult.inventory,
+                            scanResult.transactionEngineApplied,
+                          );
+                          return (
+                            <span className={`bs-status-chip${st.variant ? ` ${st.variant}` : ''}`}>
+                              {st.label}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </>
-                  )}
+                  ) : null}
                 </div>
                 {/* Right column */}
                 <div className="bs-result-col">
@@ -1422,9 +2645,32 @@ const BarcodeScan = () => {
                   </div>
                   <div className="bs-result-cell">
                     <span className="bs-rk">Brand</span>
-                    <span className="bs-rv">{scanResult.item.brand?.brand_name || '—'}</span>
+                    <span className="bs-rv">
+                      {scanResult.item.brand?.brand_name
+                        || scanResult.item.brand_name
+                        || '—'}
+                    </span>
                   </div>
-                  {scanResult.inventory && (
+                  {scanResult.auditSnapshot ? (
+                    <>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Item (audit)</span>
+                        <span className="bs-rv">{scanResult.auditSnapshot.item_name || scanResult.item.product_name || '—'}</span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Quantity</span>
+                        <span className="bs-rv">{scanResult.auditSnapshot.current_stock ?? '—'} units</span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Total Value</span>
+                        <span className="bs-rv">₱{((Number(scanResult.auditSnapshot.current_stock) || 0) * price(scanResult.item)).toLocaleString()}</span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Item Type</span>
+                        <span className="bs-rv" style={{ textTransform: 'capitalize' }}>{scanResult.item.product_type || '—'}</span>
+                      </div>
+                    </>
+                  ) : scanResult.inventory ? (
                     <>
                       <div className="bs-result-cell">
                         <span className="bs-rk">{lbl.warehouse}</span>
@@ -1435,8 +2681,21 @@ const BarcodeScan = () => {
                         </span>
                       </div>
                       <div className="bs-result-cell">
-                        <span className="bs-rk">Quantity</span>
-                        <span className="bs-rv">{qty(scanResult.inventory) !== null ? `${qty(scanResult.inventory)} units` : '—'}</span>
+                        <span className="bs-rk">Qty (this location)</span>
+                        <span className="bs-rv">
+                          {qty(scanResult.inventory) !== null ? `${qty(scanResult.inventory)} units` : '—'}
+                        </span>
+                      </div>
+                      <div className="bs-result-cell">
+                        <span className="bs-rk">Total Qty (all locations)</span>
+                        <span className="bs-rv">
+                          {(() => {
+                            const total = sumInventoryOnHand(scanResult.inventoryRows);
+                            const fallback = qty(scanResult.inventory);
+                            const n = total != null ? total : fallback;
+                            return n != null ? `${n} units` : '—';
+                          })()}
+                        </span>
                       </div>
                       <div className="bs-result-cell">
                         <span className="bs-rk">Total Value</span>
@@ -1447,29 +2706,60 @@ const BarcodeScan = () => {
                         <span className="bs-rv" style={{ textTransform: 'capitalize' }}>{scanResult.item.product_type || '—'}</span>
                       </div>
                     </>
-                  )}
+                  ) : null}
                 </div>
               </div>
               <p className="bs-timestamp">
                 Scanned at {scanResult.scannedAt} — By: {scanResult.scannedBy}
+                {scanResult.modeKey === 'issue-out' && scanResult.issuedQuantity != null && (
+                  <> — Issued: <strong>{scanResult.issuedQuantity}</strong> unit(s)</>
+                )}
               </p>
             </div>
             <div className="bs-action-card">
               <div className="bs-action-head">
                 <span className="bs-action-title">Mode Action: {mode.label}</span>
                 <span className="bs-action-sub">
-                  {mode.key === 'receive-po'
-                    ? 'PO at location ay nasa setup sa itaas. I-post ang transaksyon gamit ang na-scan na item.'
-                    : 'Post transaction using scanned barcode'}
+                  {mode.key === 'audit'
+                    ? 'Read-only: verification is logged when you scan. Inventory is not modified.'
+                    : mode.key === 'issue-out' && !scanResult.transactionEngineApplied
+                      ? 'Enter how many units to issue. Quantity is checked against available stock, then inventory is reduced by exactly that amount when you tap Issue stock out.'
+                      : scanResult.transactionEngineApplied
+                        ? 'Stock for this scan was already updated on the server. You do not need to post again.'
+                        : mode.key === 'receive-po'
+                          ? 'Each accepted scan posts receiving on the server. Execute is not required for normal receiving.'
+                          : 'Post transaction using scanned barcode'}
                 </span>
               </div>
-              {mode.key !== 'receive-po' ? (
+              {mode.key === 'receive-po' && (
+                <div className="bs-receive-po-context" style={{ borderTop: '1px solid #ecfdf5' }}>
+                  <p className="bs-action-sub" style={{ padding: '12px 16px 0', margin: 0, color: '#047857' }}>
+                    <strong>Location</strong> and <strong>Purchase order</strong> (optional) — same as setup above; keep them here after you scan so you can change them without scrolling up.
+                  </p>
+                  {receivePoSetupGrid}
+                </div>
+              )}
+              {mode.key !== 'receive-po' && mode.key !== 'audit' ? (
               <div className="bs-action-grid">
                 <div className="bs-filter-col">
-                  <label>QUANTITY</label>
+                  <label>
+                    QUANTITY
+                    {mode.key === 'issue-out' && scanResult?.inventory && !scanResult.transactionEngineApplied && (
+                      <span style={{ fontWeight: 500, color: '#64748b' }}>
+                        {' '}(max {availableAtLocation(scanResult.inventory)})
+                      </span>
+                    )}
+                  </label>
                   <input
                     type="number"
                     min="1"
+                    max={
+                      mode.key === 'issue-out' && scanResult?.inventory && !scanResult.transactionEngineApplied
+                        ? availableAtLocation(scanResult.inventory)
+                        : undefined
+                    }
+                    step="1"
+                    inputMode="numeric"
                     value={txForm.quantity}
                     onChange={(e) => setTxForm((p) => ({ ...p, quantity: e.target.value }))}
                   />
@@ -1597,10 +2887,25 @@ const BarcodeScan = () => {
               </div>
               ) : null}
               <div className="bs-action-footer">
-                <button type="button" className="bs-action-btn" onClick={executeModeAction} disabled={txSubmitting}>
+                <button
+                  type="button"
+                  className="bs-action-btn"
+                  onClick={executeModeAction}
+                  disabled={
+                    txSubmitting
+                    || scanResult.transactionEngineApplied
+                    || mode.key === 'audit'
+                  }
+                >
                   {txSubmitting
                     ? 'Processing...'
-                    : (mode.key === 'transfer' && transferSubmode === 'in' ? 'Record showroom receipt' : `Execute ${mode.label}`)}
+                    : scanResult.transactionEngineApplied
+                      ? 'Already posted'
+                      : mode.key === 'audit'
+                        ? 'Audit — scan only'
+                        : mode.key === 'issue-out'
+                          ? 'Issue stock out'
+                          : (mode.key === 'transfer' && transferSubmode === 'in' ? 'Record showroom receipt' : `Execute ${mode.label}`)}
                 </button>
               </div>
               {txLogs.length > 0 && (
@@ -1645,15 +2950,78 @@ const BarcodeScan = () => {
                     <span style={{ fontSize: '0.6rem', fontWeight: 700, color: MODES.find(m => m.key === h.modeKey)?.color || '#6b7280', letterSpacing: '0.04em' }}>
                       {h.mode}
                     </span>
-                    <span className={`bs-status-chip${isLow(h.inventory) ? ' low' : ''}`}>
-                      {h.inventory ? (stockSt(h.inventory) || 'In Stock') : '—'}
-                    </span>
+                    {h.inventory ? (() => {
+                      const st = getStatusChipDisplay(h.modeKey, h.inventory, h.transactionEngineApplied);
+                      return (
+                        <span className={`bs-status-chip${st.variant ? ` ${st.variant}` : ''}`}>
+                          {st.label}
+                        </span>
+                      );
+                    })() : (
+                      <span className="bs-status-chip">—</span>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           </div>
         )}
+
+        <Modal
+          isOpen={notFoundPromptOpen}
+          onClose={() => {
+            setNotFoundPromptOpen(false);
+            setPendingRegisterBarcode('');
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }}
+          title="Barcode not found"
+        >
+          <p style={{ marginBottom: 16, color: '#374151', lineHeight: 1.45 }}>
+            Barcode not found. Do you want to register this product?
+          </p>
+          <div className="im-modal-footer" style={{ justifyContent: 'flex-end', gap: 10 }}>
+            <button
+              type="button"
+              className="im-modal-btn-cancel"
+              onClick={() => {
+                setNotFoundPromptOpen(false);
+                setPendingRegisterBarcode('');
+                setTimeout(() => inputRef.current?.focus(), 50);
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="im-modal-btn-confirm"
+              onClick={() => {
+                setNotFoundPromptOpen(false);
+                setRegisterProductOpen(true);
+              }}
+            >
+              Yes — register product
+            </button>
+          </div>
+        </Modal>
+
+        <ProductRegisterModal
+          isOpen={registerProductOpen}
+          onClose={() => {
+            setRegisterProductOpen(false);
+            setPendingRegisterBarcode('');
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }}
+          editingItem={null}
+          initialBarcode={pendingRegisterBarcode}
+          lockBarcode
+          showPricingFields={showPricingFields}
+          onSuccess={() => {
+            setRegisterProductOpen(false);
+            setPendingRegisterBarcode('');
+            toast.success('Product saved. Scan the barcode again to receive into stock.');
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }}
+        />
       </div>
     </AdminLayout>
   );
