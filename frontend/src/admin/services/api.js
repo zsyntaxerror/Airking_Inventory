@@ -2,29 +2,53 @@
 // when opened via LAN IP. REACT_APP_API_URL often points at 127.0.0.1 — on a phone that is wrong.
 const trimSlash = (u) => String(u || '').replace(/\/+$/, '');
 const rawEnvApi = process.env.REACT_APP_API_URL && String(process.env.REACT_APP_API_URL).trim();
+const publicApiOverride = process.env.REACT_APP_API_PUBLIC_URL && String(process.env.REACT_APP_API_PUBLIC_URL).trim();
 const apiPort = String(process.env.REACT_APP_API_PORT || '8000').replace(/^:+/, '');
 
-export const getApiBaseUrl = () => {
-  if (typeof window === 'undefined') {
-    return trimSlash(rawEnvApi || `http://127.0.0.1:${apiPort}/api`);
-  }
-  const h = window.location.hostname;
-  const onLoopback =
+function isLoopbackHost(h) {
+  return (
     !h ||
     h === 'localhost' ||
     h === '127.0.0.1' ||
     h === '[::1]' ||
-    h === '::1';
-  const onLan = !onLoopback;
+    h === '::1'
+  );
+}
 
-  if (onLan) {
+/** Private IPv4 ranges + typical dev LAN hostnames (not public sites like *.vercel.app). */
+function isPrivateLanHost(h) {
+  if (!h || isLoopbackHost(h)) return false;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/i.test(h)) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/i.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/i.test(h)) return true;
+  if (/\.local$/i.test(h)) return true;
+  // http://DESKTOP-XYZ:3000 — single-label Windows hostname on LAN
+  if (!h.includes('.')) return true;
+  return false;
+}
+
+export const getApiBaseUrl = () => {
+  if (typeof window === 'undefined') {
+    return trimSlash(publicApiOverride || rawEnvApi || `http://127.0.0.1:${apiPort}/api`);
+  }
+
+  if (publicApiOverride) {
+    return trimSlash(publicApiOverride);
+  }
+
+  const h = window.location.hostname;
+
+  if (isLoopbackHost(h)) {
+    if (rawEnvApi) return trimSlash(rawEnvApi);
+    return `http://127.0.0.1:${apiPort}/api`;
+  }
+
+  if (isPrivateLanHost(h)) {
     const envPointsToLoopback =
       !rawEnvApi || /127\.0\.0\.1|localhost|\[::1\]|::1/i.test(rawEnvApi);
     if (!envPointsToLoopback) {
       return trimSlash(rawEnvApi);
     }
-    // `php artisan serve` is HTTP only on :8000. Mirroring https:// from the SPA (e.g. mkcert)
-    // would call https://LAN_IP:8000 and fail. Set REACT_APP_API_HTTPS=true only if the API has TLS.
     const proto = String(process.env.REACT_APP_API_HTTPS || '').toLowerCase() === 'true' ? 'https:' : 'http:';
     return trimSlash(`${proto}//${h}:${apiPort}/api`);
   }

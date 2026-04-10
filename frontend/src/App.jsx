@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './admin/context/AuthContext';
+import { SupabaseAuthProvider } from './pwa/context/SupabaseAuthContext';
 import RoleRoute from './admin/components/RoleRoute';
 import './App.css';
 
@@ -51,9 +52,18 @@ const ComplianceReview = lazy(() => import('./admin/pages/ComplianceReview'));
 const AlertsNotices = lazy(() => import('./admin/pages/AlertsNotices'));
 const WarrantyManagement = lazy(() => import('./admin/pages/WarrantyManagement'));
 
+// Supabase PWA (parallel to Laravel admin)
+const PwaLogin = lazy(() => import('./pwa/pages/PwaLogin'));
+const PwaLayout = lazy(() => import('./pwa/components/PwaLayout'));
+const PwaProtectedRoute = lazy(() => import('./pwa/components/PwaProtectedRoute'));
+const PwaDashboard = lazy(() => import('./pwa/pages/PwaDashboard'));
+const PwaScan = lazy(() => import('./pwa/pages/PwaScan'));
+const PwaProducts = lazy(() => import('./pwa/pages/PwaProducts'));
+
 function App() {
   return (
     <AuthProvider>
+    <SupabaseAuthProvider>
     <Router>
       <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#6b7280' }}>Loading...</div>}>
         <Routes>
@@ -61,6 +71,22 @@ function App() {
           <Route path="/admin" element={<Navigate to="/admin/login" replace />} />
           <Route path="/admin/login" element={<Login />} />
           <Route path="/admin/forgot-password" element={<ForgotPassword />} />
+
+          {/* Supabase PWA inventory (Vercel + Supabase; optional env) */}
+          <Route path="/pwa/login" element={<PwaLogin />} />
+          <Route
+            path="/pwa"
+            element={
+              <PwaProtectedRoute>
+                <PwaLayout />
+              </PwaProtectedRoute>
+            }
+          >
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard" element={<PwaDashboard />} />
+            <Route path="scan" element={<PwaScan />} />
+            <Route path="products" element={<PwaProducts />} />
+          </Route>
 
           {/* Dashboard */}
           <Route path="/admin/dashboard" element={<RoleRoute><Dashboard /></RoleRoute>} />
@@ -113,6 +139,7 @@ function App() {
         </Routes>
       </Suspense>
     </Router>
+    </SupabaseAuthProvider>
     </AuthProvider>
   );
 }
