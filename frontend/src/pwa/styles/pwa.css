@@ -21,8 +21,8 @@
 .pwa-spinner {
   width: 36px;
   height: 36px;
-  border: 3px solid #fecaca;
-  border-top-color: #dc2626;
+  border: 3px solid var(--primary-light);
+  border-top-color: var(--primary);
   border-radius: 50%;
   animation: pwa-spin 0.7s linear infinite;
   margin-bottom: 12px;
@@ -44,11 +44,11 @@
 }
 
 .pwa-header {
-  background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
+  background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 100%);
   color: #fff;
   padding: 14px 16px calc(12px + env(safe-area-inset-top, 0));
   padding-top: calc(14px + env(safe-area-inset-top, 0));
-  box-shadow: 0 2px 12px rgba(185, 28, 28, 0.25);
+  box-shadow: 0 2px 12px rgba(220, 20, 60, 0.25);
 }
 
 .pwa-header-inner {
@@ -122,8 +122,8 @@
 }
 
 .pwa-nav a.active {
-  color: #dc2626;
-  background: #fef2f2;
+  color: var(--primary);
+  background: var(--primary-light);
 }
 
 .pwa-nav-icon {
@@ -161,8 +161,8 @@
 }
 
 .pwa-stat {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: var(--primary-light);
+  border: 1px solid var(--primary-light);
   border-radius: 10px;
   padding: 12px;
   text-align: center;
@@ -176,7 +176,7 @@
 .pwa-stat-value {
   font-size: 1.5rem;
   font-weight: 800;
-  color: #991b1b;
+  color: var(--primary-dark);
   line-height: 1.2;
 }
 
@@ -251,9 +251,9 @@
 }
 
 .pwa-btn-primary {
-  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   color: #fff;
-  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.35);
+  box-shadow: 0 4px 14px rgba(220, 20, 60, 0.35);
 }
 
 .pwa-btn-secondary {
@@ -280,8 +280,8 @@
 
 .pwa-input:focus {
   outline: none;
-  border-color: #f87171;
-  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.25);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(245, 179, 1, 0.22);
 }
 
 .pwa-login-page {
@@ -291,7 +291,7 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: linear-gradient(180deg, #fef2f2 0%, #f9fafb 40%);
+  background: linear-gradient(180deg, var(--primary-light) 0%, #f9fafb 40%);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
@@ -308,7 +308,7 @@
 .pwa-login-card h1 {
   margin: 0 0 6px;
   font-size: 1.5rem;
-  color: #991b1b;
+  color: var(--primary-dark);
 }
 
 .pwa-login-card > p {
@@ -318,8 +318,8 @@
 }
 
 .pwa-login-error {
-  background: #fef2f2;
-  color: #b91c1c;
+  background: var(--primary-light);
+  color: var(--primary-dark);
   padding: 10px 12px;
   border-radius: 8px;
   font-size: 0.85rem;
@@ -430,3 +430,4 @@
   letter-spacing: 0.05em;
   margin-bottom: 4px;
 }
+

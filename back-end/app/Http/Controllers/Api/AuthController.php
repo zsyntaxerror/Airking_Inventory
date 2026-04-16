@@ -22,7 +22,7 @@ class AuthController extends Controller
 
     private function loginThrottleKey(Request $request): string
     {
-        return 'login:' . sha1(strtolower((string) $request->input('username')) . '|' . $request->ip());
+        return 'login:' . sha1(strtolower((string) $request->input('email')) . '|' . $request->ip());
     }
 
     private function logLoginAttempt(Request $request, ?User $user, bool $success, ?string $failureReason = null): void
@@ -30,7 +30,8 @@ class AuthController extends Controller
         try {
             LoginActivity::create([
                 'user_id' => $user?->user_id,
-                'username_attempt' => Str::limit((string) $request->input('username'), 100, ''),
+                // DB column is `username_attempt` for legacy reasons; we now store email attempts here.
+                'username_attempt' => Str::limit((string) $request->input('email'), 100, ''),
                 'success' => $success,
                 'failure_reason' => $failureReason ? Str::limit($failureReason, 250, '') : null,
                 'ip_address' => $request->ip(),
@@ -101,7 +102,7 @@ class AuthController extends Controller
     public function login(Request $request, LoginCaptchaService $captcha)
     {
         $request->validate([
-            'username' => 'required|string|max:100',
+            'email' => 'required|email|max:100',
             'password' => 'required|string|max:255',
             'captcha_token' => 'required|string',
             'captcha_answer' => 'required|string|max:10',
@@ -113,7 +114,7 @@ class AuthController extends Controller
             $this->logLoginAttempt($request, null, false, 'Account temporarily locked (too many attempts).');
 
             throw ValidationException::withMessages([
-                'username' => [
+                'email' => [
                     'Too many login attempts. Try again in ' . ceil($seconds / 60) . ' minute(s).',
                 ],
             ]);
@@ -128,14 +129,14 @@ class AuthController extends Controller
             ]);
         }
 
-        $user = User::where('username', $request->username)->first();
+        $user = User::where('email', $request->email)->first();
 
         if (! $user || ! Hash::check($request->password, $user->password_hash)) {
             RateLimiter::hit($throttleKey, self::LOGIN_DECAY_SECONDS);
             $this->logLoginAttempt($request, $user, false, 'Invalid credentials.');
 
             throw ValidationException::withMessages([
-                'username' => ['The provided credentials are incorrect.'],
+                'email' => ['The provided credentials are incorrect.'],
             ]);
         }
 
@@ -144,7 +145,7 @@ class AuthController extends Controller
             $this->logLoginAttempt($request, $user, false, 'Inactive account.');
 
             throw ValidationException::withMessages([
-                'username' => ['Your account is inactive. Please contact administrator.'],
+                'email' => ['Your account is inactive. Please contact administrator.'],
             ]);
         }
 
@@ -215,26 +216,23 @@ class AuthController extends Controller
      */
     public function forgotPassword(Request $request)
     {
-        $ipKey = 'forgot:' . sha1($request->ip() . '|' . (string) $request->input('username'));
+        $ipKey = 'forgot:' . sha1($request->ip() . '|' . (string) $request->input('email'));
         if (RateLimiter::tooManyAttempts($ipKey, 5)) {
             throw ValidationException::withMessages([
-                'username' => ['Too many reset attempts. Try again later.'],
+                'email' => ['Too many reset attempts. Try again later.'],
             ]);
         }
         RateLimiter::hit($ipKey, 3600);
 
         $validated = $request->validate([
-            'username' => 'required|string|max:100',
             'email' => 'required|email|max:100',
         ]);
 
-        $user = User::where('username', $validated['username'])
-            ->where('email', $validated['email'])
-            ->first();
+        $user = User::where('email', $validated['email'])->first();
 
         if (! $user) {
             throw ValidationException::withMessages([
-                'username' => ['We could not find a matching account.'],
+                'email' => ['We could not find a matching account.'],
             ]);
         }
 

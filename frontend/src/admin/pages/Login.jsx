@@ -20,7 +20,7 @@ function captchaAnswerStatus(answer, expected) {
 const Login = () => {
   const navigate = useNavigate();
   const { updateUser } = useAuth();
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [captchaAnswer, setCaptchaAnswer] = useState('');
   const [captchaToken, setCaptchaToken] = useState('');
@@ -90,15 +90,15 @@ const Login = () => {
     }
 
     try {
-      const data = await authAPI.login(username, password, captchaToken, captchaAnswer);
+      const data = await authAPI.login(email, password, captchaToken, captchaAnswer);
       if (data.user) updateUser(data.user);
       navigate('/admin/dashboard');
     } catch (err) {
       const message =
         err.errors?.captcha_answer?.[0]
-        || err.errors?.username?.[0]
+        || err.errors?.email?.[0]
         || err.message
-        || 'Invalid username or password.';
+        || 'Invalid email or password.';
       setError(message);
       setPassword('');
       setCaptchaAnswer('');
@@ -128,16 +128,16 @@ const Login = () => {
 
             <form onSubmit={handleSubmit}>
               <div className="form-group">
-                <label>Username</label>
+                <label>Email</label>
                 <input
-                  type="text"
-                  placeholder="Enter your username"
-                  value={username}
+                  type="email"
+                  placeholder="name@example.com"
+                  value={email}
                   onChange={(e) => {
-                    setUsername(e.target.value);
+                    setEmail(e.target.value);
                     setError('');
                   }}
-                  autoComplete="username"
+                  autoComplete="email"
                   maxLength={100}
                   required
                 />

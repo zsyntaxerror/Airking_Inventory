@@ -169,11 +169,11 @@ export const authAPI = {
     return apiRequest('/login/challenge');
   },
 
-  login: async (username, password, captchaToken, captchaAnswer) => {
+  login: async (email, password, captchaToken, captchaAnswer) => {
     const data = await apiRequest('/login', {
       method: 'POST',
       body: JSON.stringify({
-        username,
+        email,
         password,
         captcha_token: captchaToken,
         captcha_answer: String(captchaAnswer ?? ''),
@@ -190,10 +190,10 @@ export const authAPI = {
     removeToken();
   },
 
-  forgotPassword: async (username, email) => {
+  forgotPassword: async (email) => {
     return apiRequest('/forgot-password', {
       method: 'POST',
-      body: JSON.stringify({ username, email }),
+      body: JSON.stringify({ email }),
     });
   },
 

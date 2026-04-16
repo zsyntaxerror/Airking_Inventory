@@ -6,10 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Traits\ApiResponse;
 use App\Models\User;
 use App\Models\Role;
+use App\Models\Branch;
 use App\Models\Location;
 use App\Models\Product;
 use App\Models\Inventory;
 use App\Models\Sale;
+use App\Models\SaleDetail;
 use App\Models\CategoryLookup;
 use App\Models\BrandLookup;
 use App\Models\UnitLookup;
@@ -19,7 +21,7 @@ use Illuminate\Http\Request;
 
 /**
  * Returns multiple resources in one request to reduce round-trips.
- * GET /api/batch?include=users,roles,locations,items,inventory,sales,dashboard,categories,brands,units
+ * GET /api/batch?include=users,roles,branches,locations,items,inventory,transactions,sales,dashboard,categories,brands,units
  */
 class BatchController extends Controller
 {
@@ -83,8 +85,60 @@ class BatchController extends Controller
             ];
         }
 
+        if (in_array('branches', $parts)) {
+            $data['branches'] = [
+                'success' => true,
+                'data'    => Branch::orderBy('name')->get(),
+            ];
+        }
+
+        if (in_array('transactions', $parts)) {
+            $details = SaleDetail::query()
+                ->with([
+                    'product.category',
+                    'product.brand',
+                    'sale' => static function ($q) {
+                        $q->with(['location.branch']);
+                    },
+                ])
+                ->whereHas('sale')
+                ->join('sales', 'sales_details.sales_id', '=', 'sales.sales_id')
+                ->orderByDesc('sales.created_at')
+                ->select('sales_details.*')
+                ->limit(4000)
+                ->get();
+
+            $mapped = $details->map(static function (SaleDetail $d) {
+                $sale   = $d->sale;
+                $loc    = $sale?->location;
+                $branch = $loc?->branch;
+                $prod   = $d->product;
+
+                return [
+                    'product_id'  => $d->product_id,
+                    'item_id'     => $d->product_id,
+                    'branch_id'   => $loc?->branch_id ?? $branch?->id,
+                    'quantity'    => (int) $d->quantity,
+                    'amount'      => (float) $d->unit_price,
+                    'created_at'  => $sale?->created_at?->toIso8601String(),
+                    'date'        => $sale?->sale_date?->format('Y-m-d'),
+                    'type'        => 'sale',
+                    'notes'       => $sale?->invoice_number
+                        ? ('Invoice ' . $sale->invoice_number)
+                        : 'Sale',
+                    'product'     => $prod,
+                    'branch'      => $branch,
+                ];
+            })->filter(static fn ($row) => $row['product'] !== null)->values()->all();
+
+            $data['transactions'] = [
+                'success' => true,
+                'data'    => $mapped,
+            ];
+        }
+
         if (in_array('inventory', $parts)) {
-            $inventory = Inventory::with(['product.category', 'product.unit', 'location'])->paginate(500);
+            $inventory = Inventory::with(['product.category', 'product.unit', 'location.branch'])->paginate(500);
             $data['inventory'] = [
                 'success'    => true,
                 'data'       => $inventory->items(),

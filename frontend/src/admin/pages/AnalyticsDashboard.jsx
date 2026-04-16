@@ -92,6 +92,38 @@ function applyFilters(list, branch, category, branchKey = 'branch_id', catAccess
   return result;
 }
 
+/** Map Laravel inventory rows to the shape analytics helpers expect */
+function normalizeInventoryRecord(inv) {
+  const product = inv.product || {};
+  const loc = inv.location || {};
+  const branch = loc.branch || inv.branch || null;
+  const qty = parseInt(inv.quantity_on_hand ?? inv.quantity ?? inv.available_quantity ?? 0, 10) || 0;
+  const recRaw = inv.reorder_level ?? product.recommended_stocks ?? 10;
+  const reorder = Math.max(1, parseInt(recRaw, 10) || 10);
+  const maxStock = parseInt(inv.max_quantity ?? inv.optimal_quantity ?? Math.max(reorder * 5, 50), 10) || Math.max(reorder * 5, 50);
+  return {
+    ...inv,
+    quantity: qty,
+    branch_id: inv.branch_id ?? loc.branch_id ?? branch?.id,
+    unit_price: parseFloat(inv.unit_price ?? product.unit_price ?? 0),
+    reorder_level: reorder,
+    max_quantity: maxStock,
+    optimal_quantity: inv.optimal_quantity != null ? inv.optimal_quantity : reorder * 3,
+    product,
+    branch: branch || inv.branch,
+  };
+}
+
+function normalizeTransactionRecord(tx) {
+  const product = tx.product || {};
+  return {
+    ...tx,
+    product_id: tx.product_id ?? tx.item_id,
+    branch_id: tx.branch_id ?? tx.branch?.id,
+    product: Object.keys(product).length ? product : tx.product,
+  };
+}
+
 const AnalyticsDashboard = () => {
   const [activeTab, setActiveTab] = useState('stock-level');
   const [selectedBranch, setSelectedBranch] = useState('');
@@ -200,10 +232,13 @@ const AnalyticsDashboard = () => {
   // Process ONLY the active tab's data from the cached response
   useEffect(() => {
     const cache = rawCacheRef.current;
-    if (!cache.inventory) return;
 
-    const inventoryList = Array.isArray(cache.inventory?.data) ? cache.inventory.data : [];
-    const transactionList = Array.isArray(cache.transactions?.data) ? cache.transactions.data : [];
+    const inventoryList = Array.isArray(cache.inventory?.data)
+      ? cache.inventory.data.map(normalizeInventoryRecord)
+      : [];
+    const transactionList = Array.isArray(cache.transactions?.data)
+      ? cache.transactions.data.map(normalizeTransactionRecord)
+      : [];
     const dash = cache.dashboard ?? {};
 
     // Apply branch & category filters

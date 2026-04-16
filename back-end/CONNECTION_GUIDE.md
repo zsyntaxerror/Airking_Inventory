@@ -39,9 +39,13 @@
 
 5. **Start Laravel Server**
    ```bash
-   php artisan serve
+   # For other devices on the same Wi‑Fi/LAN, DO NOT use localhost-only serve.
+   # This binds the API to all interfaces so phones/other PCs can reach it.
+   composer run serve-lan
+   # (equivalent) php artisan serve --host=0.0.0.0 --port=8000
    ```
-   Server will run on `http://localhost:8000`
+   Server will run on `http://localhost:8000` and `http://<YOUR_PC_LAN_IP>:8000`
+   - If other devices still can’t reach it, allow inbound TCP `8000` in **Windows Firewall** (Private network).
 
 ### 2. Frontend Setup
 
@@ -54,12 +58,16 @@
 2. **Configure API URL**
    - Create `.env` file in `frontend` directory
    - Add: `REACT_APP_API_URL=http://localhost:8000/api`
+   - If you will open the frontend from another device via `http://<YOUR_PC_LAN_IP>:3000`,
+     you can keep `REACT_APP_API_URL` as localhost/127.0.0.1 because the app will automatically
+     swap it to `http://<YOUR_PC_LAN_IP>:8000/api` at runtime (see `frontend/src/admin/services/api.js`).
 
 3. **Start React App**
    ```bash
    npm start
    ```
    App will run on `http://localhost:3000`
+   - For phone/other devices: open `http://<YOUR_PC_LAN_IP>:3000`
 
 ## API Endpoints
 

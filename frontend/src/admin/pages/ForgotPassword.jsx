@@ -6,7 +6,6 @@ import '../styles/login.css';
 
 const ForgotPassword = () => {
   const navigate = useNavigate();
-  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [temporaryPassword, setTemporaryPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -16,13 +15,12 @@ const ForgotPassword = () => {
     setSubmitting(true);
     setTemporaryPassword('');
     try {
-      const res = await authAPI.forgotPassword(username, email);
+      const res = await authAPI.forgotPassword(email);
       const temp = res.temporary_password;
       setTemporaryPassword(temp || '');
       toast.success('Temporary password generated. Use it to log in.');
     } catch (err) {
       const msg =
-        err?.errors?.username?.[0] ||
         err?.errors?.email?.[0] ||
         err.message ||
         'Failed to reset password.';
@@ -48,27 +46,17 @@ const ForgotPassword = () => {
         <div className="right-side">
           <div className="login-form">
             <h2>Forgot Password</h2>
-            <p>Enter your username and registered email to get a temporary password.</p>
+            <p>Enter your registered email to get a temporary password.</p>
 
             <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <label>Username</label>
-                <input
-                  type="text"
-                  placeholder="Enter your username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                />
-              </div>
-
               <div className="form-group">
                 <label>Email</label>
                 <input
                   type="email"
-                  placeholder="Enter your registered email"
+                  placeholder="name@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
                   required
                 />
               </div>
