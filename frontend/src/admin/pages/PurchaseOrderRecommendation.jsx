@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AdminLayout from '../components/AdminLayout';
 import { inventoryAPI, productsAPI } from '../services/api';
@@ -38,26 +38,19 @@ const PRIORITY_CFG = {
   MEDIUM:   { label: 'MEDIUM',        color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', barColor: '#2563eb' },
 };
 
-/** All product_id values from Item Master (paginated API) — PO Recommendation only lists rows tied to these. */
+/** All product_id values from Item Master in one API call. */
 async function fetchItemMasterProductIdSet() {
+  const res = await productsAPI.getIdList();
+  const raw = res?.data?.product_ids ?? [];
   const ids = new Set();
-  let page = 1;
-  let lastPage = 1;
-  const perPage = 200;
-  do {
-    const res = await productsAPI.getAll({ page, per_page: perPage });
-    const list = Array.isArray(res?.data) ? res.data : [];
-    list.forEach((p) => {
-      const id = Number(p.product_id);
-      if (Number.isFinite(id) && id > 0) ids.add(id);
-    });
-    lastPage = Math.max(1, Number(res?.pagination?.last_page) || 1);
-    page += 1;
-  } while (page <= lastPage);
+  (Array.isArray(raw) ? raw : []).forEach((id) => {
+    const n = Number(id);
+    if (Number.isFinite(n) && n > 0) ids.add(n);
+  });
   return ids;
 }
 
-const PORecommendation = () => {
+const PurchaseOrderRecommendation = () => {
   const navigate = useNavigate();
 
   const [inventory, setInventory]               = useState([]);
@@ -67,31 +60,51 @@ const PORecommendation = () => {
   const [categoryFilter, setCategoryFilter]     = useState('all');
   const [selectedKeys, setSelectedKeys]         = useState(() => new Set());
 
-  useEffect(() => {
-    let mounted = true;
-    setLoadingInventory(true);
-    (async () => {
-      try {
-        const [masterIds, invRes] = await Promise.all([
-          fetchItemMasterProductIdSet(),
-          inventoryAPI.getAll({ per_page: 2000 }),
-        ]);
-        if (!mounted) return;
-        let rows = Array.isArray(invRes?.data) ? invRes.data : [];
-        rows = rows.filter((row) => {
-          const pid = Number(row.product_id ?? row.product?.product_id);
-          return row.product && Number.isFinite(pid) && pid > 0 && masterIds.has(pid);
-        });
-        setInventory(rows);
-      } catch (err) {
-        console.error('PO Recommendation load failed:', err);
-        if (mounted) setInventory([]);
-      } finally {
-        if (mounted) setLoadingInventory(false);
-      }
-    })();
-    return () => { mounted = false; };
+  const loadRecommendationRows = useCallback(async (isInitial = false) => {
+    if (isInitial) setLoadingInventory(true);
+    try {
+      const [masterIds, invRes] = await Promise.all([
+        fetchItemMasterProductIdSet(),
+        inventoryAPI.getAll({ per_page: 2000 }),
+      ]);
+      let rows = Array.isArray(invRes?.data) ? invRes.data : [];
+      rows = rows.filter((row) => {
+        const pid = Number(row.product_id ?? row.product?.product_id);
+        return row.product && Number.isFinite(pid) && pid > 0 && masterIds.has(pid);
+      });
+      setInventory(rows);
+    } catch (err) {
+      console.error('PO Recommendation load failed:', err);
+      if (isInitial) setInventory([]);
+    } finally {
+      if (isInitial) setLoadingInventory(false);
+    }
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    loadRecommendationRows(true);
+
+    // Keep recommendations in sync with recent Receivings/Transfers/Adjustments.
+    const interval = setInterval(() => {
+      if (!active) return;
+      loadRecommendationRows(false);
+    }, 15000);
+
+    const onFocus = () => loadRecommendationRows(false);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadRecommendationRows(false);
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [loadRecommendationRows]);
 
   /** Client-side sum fallback if stock_on_hand_total missing on nested product. */
   const qtyTotalByProductId = useMemo(() => {
@@ -234,6 +247,9 @@ const PORecommendation = () => {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button type="button" className="sre-generate-btn" onClick={() => loadRecommendationRows(false)}>
+              REFRESH LIST
+            </button>
             <button type="button" className="sre-generate-btn" onClick={() => navigate('/admin/draft-po-creator')}>
               OPEN DRAFT PO CREATOR
             </button>
@@ -390,4 +406,4 @@ const PORecommendation = () => {
   );
 };
 
-export default PORecommendation;
+export default PurchaseOrderRecommendation;

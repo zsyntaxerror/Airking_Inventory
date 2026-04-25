@@ -5,7 +5,7 @@ import { toast } from '../utils/toast';
 import '../styles/dashboard_air.css';
 import '../styles/audit_trail.css';
 
-const AuditTrail = () => {
+const AuditTrailPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -18,10 +18,11 @@ const AuditTrail = () => {
       setError('');
       try {
         const res = await auditAPI.getTrail({ per_page: 100 });
-        const payload = Array.isArray(res?.data?.data)
-          ? res.data.data
-          : Array.isArray(res?.data)
-            ? res.data
+        // apiRequest returns the JSON body; Laravel paginator uses top-level `data`.
+        const payload = Array.isArray(res?.data)
+          ? res.data
+          : Array.isArray(res?.data?.data)
+            ? res.data.data
             : [];
         if (mounted) setLogs(payload);
       } catch (e) {
@@ -40,6 +41,7 @@ const AuditTrail = () => {
   const deriveModule = (tableName = '', action = '') => {
     const haystack = `${tableName} ${action}`.toLowerCase();
     if (haystack.includes('sale')) return 'SALES';
+    if (haystack.includes('purchase') || haystack.includes('purchase_order')) return 'PROCUREMENT';
     if (haystack.includes('transfer')) return 'TRANSFER';
     if (haystack.includes('inventory') || haystack.includes('adjustment') || haystack.includes('receiving') || haystack.includes('issuance')) return 'INVENTORY';
     if (haystack.includes('audit')) return 'AUDIT TRAIL';
@@ -48,6 +50,7 @@ const AuditTrail = () => {
 
   const getModuleClass = (module) => {
     if (module === 'SALES') return 'at-module-sales';
+    if (module === 'PROCUREMENT') return 'at-module-procurement';
     if (module === 'INVENTORY') return 'at-module-inventory';
     if (module === 'TRANSFER') return 'at-module-transfer';
     if (module === 'AUDIT TRAIL') return 'at-module-audit';
@@ -179,4 +182,4 @@ const AuditTrail = () => {
   );
 };
 
-export default AuditTrail;
+export default AuditTrailPage;

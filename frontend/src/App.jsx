@@ -39,15 +39,17 @@ const PurchaseReturnManagement = lazy(() => import('./admin/pages/PurchaseReturn
 // Reports & Monitoring
 const AnalyticsDashboard = lazy(() => import('./admin/pages/AnalyticsDashboard'));
 const SystemReports = lazy(() => import('./admin/pages/SystemReports'));
-const AuditTrail = lazy(() => import('./admin/pages/AuditTrail'));
+const AuditTrailPage = lazy(() => import('./admin/pages/AuditTrailPage'));
 const ProfitLossManagement = lazy(() => import('./admin/pages/ProfitLossManagement'));
 
 // Legacy / other pages
-const ApprovalQueue = lazy(() => import('./admin/pages/ApprovalQueue'));
+const PurchaseOrderApprovalQueue = lazy(() => import('./admin/pages/PurchaseOrderApprovalQueue'));
 const SystemConfiguration = lazy(() => import('./admin/pages/SystemConfiguration'));
 const ArchiveManagement = lazy(() => import('./admin/pages/ArchiveManagement'));
-const PORecommendation = lazy(() => import('./admin/pages/PORecommendation'));
-const DraftPOCreator = lazy(() => import('./admin/pages/DraftPOCreator'));
+const PurchaseOrderRecommendation = lazy(() => import('./admin/pages/PurchaseOrderRecommendation'));
+const PurchaseOrderDraftCreator = lazy(() => import('./admin/pages/PurchaseOrderDraftCreator'));
+const PurchaseOrderListPage = lazy(() => import('./admin/pages/PurchaseOrderListPage'));
+const PurchaseOrderDetailPage = lazy(() => import('./admin/pages/PurchaseOrderDetailPage'));
 const ComplianceReview = lazy(() => import('./admin/pages/ComplianceReview'));
 const AlertsNotices = lazy(() => import('./admin/pages/AlertsNotices'));
 const WarrantyManagement = lazy(() => import('./admin/pages/WarrantyManagement'));
@@ -102,8 +104,10 @@ function App() {
           {/* Procurement */}
           <Route path="/admin/items" element={<RoleRoute><ItemManagement /></RoleRoute>} />
           <Route path="/admin/suppliers" element={<RoleRoute><SupplierNetwork /></RoleRoute>} />
-          <Route path="/admin/purchase-orders" element={<RoleRoute><ApprovalQueue initialTab="purchase-orders" /></RoleRoute>} />
-          <Route path="/admin/draft-po-creator" element={<RoleRoute><DraftPOCreator /></RoleRoute>} />
+          <Route path="/admin/purchase-orders" element={<RoleRoute><PurchaseOrderListPage /></RoleRoute>} />
+          <Route path="/admin/purchase-orders/:id" element={<RoleRoute><PurchaseOrderDetailPage /></RoleRoute>} />
+          <Route path="/admin/approval-queue" element={<RoleRoute><PurchaseOrderApprovalQueue /></RoleRoute>} />
+          <Route path="/admin/draft-po-creator" element={<RoleRoute><PurchaseOrderDraftCreator /></RoleRoute>} />
           <Route path="/admin/receivings" element={<RoleRoute><ReceivingManagement /></RoleRoute>} />
 
           {/* Inventory */}
@@ -124,14 +128,14 @@ function App() {
           {/* Reports & Monitoring */}
           <Route path="/admin/analytics" element={<RoleRoute><AnalyticsDashboard /></RoleRoute>} />
           <Route path="/admin/reports" element={<RoleRoute><SystemReports /></RoleRoute>} />
-          <Route path="/admin/audit" element={<RoleRoute><AuditTrail /></RoleRoute>} />
+          <Route path="/admin/audit" element={<RoleRoute><AuditTrailPage /></RoleRoute>} />
+          <Route path="/admin/audit-trail" element={<RoleRoute><AuditTrailPage /></RoleRoute>} />
           <Route path="/admin/profit-loss" element={<RoleRoute><ProfitLossManagement /></RoleRoute>} />
 
           {/* Legacy routes */}
-          <Route path="/admin/approval-queue" element={<RoleRoute><ApprovalQueue /></RoleRoute>} />
           <Route path="/admin/config" element={<RoleRoute><SystemConfiguration /></RoleRoute>} />
           <Route path="/admin/archive" element={<RoleRoute><ArchiveManagement /></RoleRoute>} />
-          <Route path="/admin/po-recommendations" element={<RoleRoute><PORecommendation /></RoleRoute>} />
+          <Route path="/admin/po-recommendations" element={<RoleRoute><PurchaseOrderRecommendation /></RoleRoute>} />
           <Route path="/admin/compliance" element={<RoleRoute><ComplianceReview /></RoleRoute>} />
           <Route path="/admin/alerts" element={<RoleRoute><AlertsNotices /></RoleRoute>} />
           <Route path="/admin/notifications" element={<RoleRoute><Navigate to="/admin/alerts" replace /></RoleRoute>} />

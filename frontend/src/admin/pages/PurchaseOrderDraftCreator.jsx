@@ -8,7 +8,6 @@ import {
   inventoryAPI,
   batchAPI,
   suppliersAPI,
-  locationsAPI,
   purchaseOrdersAPI,
   statusAPI,
 } from '../services/api';
@@ -17,10 +16,11 @@ import {
   addApprovalQueuePurchaseOrder,
   addSystemNotification,
 } from '../utils/approvalNotifications';
+import { downloadPoCsv, downloadPoHtmlDocument, openPoPrintPdf } from '../utils/purchaseOrderExport';
 import '../styles/dashboard_air.css';
 import '../styles/po_recommendation.css';
 
-const DraftPOCreator = () => {
+const PurchaseOrderDraftCreator = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -75,12 +75,19 @@ const DraftPOCreator = () => {
     let mounted = true;
     const load = async () => {
       try {
-        const first = await branchesAPI.getAll({ status: 'Active', per_page: 100, page: 1 });
-        const list  = Array.isArray(first?.data) ? [...first.data] : [];
-        const total = first?.pagination?.last_page ?? 1;
-        for (let p = 2; p <= total; p++) {
-          const more = await branchesAPI.getAll({ status: 'Active', per_page: 100, page: p });
-          list.push(...(Array.isArray(more?.data) ? more.data : []));
+        const perPage = 500;
+        const first = await branchesAPI.getAll({ status: 'Active', per_page: perPage, page: 1 });
+        const list = Array.isArray(first?.data) ? [...first.data] : [];
+        const lastPage = Math.max(1, Number(first?.pagination?.last_page) || 1);
+        if (lastPage > 1) {
+          const pageRequests = [];
+          for (let p = 2; p <= lastPage; p += 1) {
+            pageRequests.push(branchesAPI.getAll({ status: 'Active', per_page: perPage, page: p }));
+          }
+          const rest = await Promise.all(pageRequests);
+          rest.forEach((more) => {
+            list.push(...(Array.isArray(more?.data) ? more.data : []));
+          });
         }
         if (mounted) {
           setBranches(list);
@@ -351,6 +358,37 @@ const DraftPOCreator = () => {
     if (lineItems.length === 0) { setSubmitError('Add at least one item to the purchase order.'); return; }
     if (!selectedSupplierId)    { setSubmitError('Please select a supplier.'); return; }
     if (!poDate)                { setSubmitError('Please select a PO date.'); return; }
+    if (!selectedBranch) {
+      setSubmitError('Select a branch. The system uses it to pick a receiving location in the database.');
+      return;
+    }
+    if (loadingBranches) {
+      setSubmitError('Branches are still loading. Wait a moment and try again.');
+      return;
+    }
+
+    const poDetails = lineItems
+      .map((li) => {
+        const pid = li.productId != null ? Number(li.productId) : NaN;
+        if (!Number.isFinite(pid) || pid <= 0) return null;
+        const qty = Math.max(1, parseInt(li.qty, 10) || 1);
+        const unit = Number(li.unitCost) || 0;
+        return {
+          product_id: pid,
+          quantity_ordered: qty,
+          unit_price: unit,
+          subtotal: Number(li.total) || qty * unit,
+        };
+      })
+      .filter(Boolean);
+
+    if (poDetails.length === 0) {
+      setSubmitError(
+        'To save this PO in the database, every line must have a product from Item Master (or use Add Custom Product and confirm it was created).',
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       let preparedBy = 'Inventory Analyst';
@@ -367,45 +405,16 @@ const DraftPOCreator = () => {
       const totalQty = lineItems.reduce((sum, item) => sum + Number(item.qty || 0), 0);
       const topItem = lineItems[0];
 
-      let locationIdForPo = '';
-      try {
-        const locRes = await locationsAPI.getAll({ per_page: 500 });
-        const locs = Array.isArray(locRes?.data) ? locRes.data : [];
-        const matchBranch = locs.find((l) => String(l.branch_id ?? '') === String(selectedBranch));
-        const wh = locs.find((l) => String(l.location_type || '').toLowerCase() === 'warehouse');
-        const first = locs[0];
-        const pick = matchBranch || wh || first;
-        locationIdForPo = String(pick?.location_id ?? pick?.id ?? '');
-      } catch (_) {
-        /* location resolved below — queue still works without API payload */
-      }
-
-      const poDetails = lineItems
-        .map((li) => {
-          const pid = li.productId != null ? Number(li.productId) : NaN;
-          if (!Number.isFinite(pid) || pid <= 0) return null;
-          const qty = Math.max(1, parseInt(li.qty, 10) || 1);
-          const unit = Number(li.unitCost) || 0;
-          return {
-            product_id: pid,
-            quantity_ordered: qty,
-            unit_price: unit,
-            subtotal: Number(li.total) || qty * unit,
-          };
-        })
-        .filter(Boolean);
-
-      const apiCreatePayload =
-        poDetails.length > 0 && locationIdForPo
-          ? {
-              supplier_id: Number(selectedSupplierId),
-              location_id: Number(locationIdForPo),
-              pc_number: referenceNo,
-              order_date: poDate,
-              expected_delivery_date: expectedDeliveryDate || null,
-              details: poDetails,
-            }
-          : null;
+      // Only branch_id is sent here: the API resolves location_id from locations.branch_id so the row is always
+      // stored, and optional location middleware is not tripped by a client-picked location the user cannot access.
+      const apiCreatePayload = {
+        supplier_id: Number(selectedSupplierId),
+        branch_id: Number(selectedBranch),
+        pc_number: referenceNo,
+        order_date: poDate,
+        expected_delivery_date: expectedDeliveryDate || null,
+        details: poDetails,
+      };
 
       const restockEntry = {
         id: `rstk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -451,58 +460,45 @@ const DraftPOCreator = () => {
         line_items_snapshot,
       };
 
-      if (apiCreatePayload) {
-        let pendingStatusId = null;
-        try {
-          const stRes = await statusAPI.getAll({ category: 'purchase_order' });
-          const stRows = Array.isArray(stRes?.data) ? stRes.data : [];
-          pendingStatusId = stRows.find((s) => String(s.status_name || '').toLowerCase().includes('pending'))?.status_id ?? null;
-        } catch (_) {
-          /* optional — PO still created without status */
-        }
-        const createBody = {
-          ...apiCreatePayload,
-          ...(pendingStatusId ? { status_id: pendingStatusId } : {}),
-        };
-        try {
-          const res = await purchaseOrdersAPI.create(createBody);
-          const data = res?.data;
-          const backendPoId = data?.po_id ?? data?.id;
-          if (backendPoId == null || backendPoId === '') {
-            setSubmitError('Server did not return a purchase order ID. Check the API response.');
-            return;
-          }
-          addApprovalQueueRestockRequest(restockEntry);
-          addApprovalQueuePurchaseOrder({
-            ...queuePoBase,
-            status: 'pending',
-            synced_to_api: true,
-            backend_po_id: backendPoId,
-            api_create_payload: null,
-            api_sync_note: undefined,
-          });
-        } catch (apiErr) {
-          const msg = apiErr?.errors
-            ? Object.values(apiErr.errors).flat().join(' ')
-            : apiErr?.message || 'Could not save the purchase order to the database.';
-          setSubmitError(msg);
+      let pendingStatusId = null;
+      try {
+        const stRes = await statusAPI.getAll({ category: 'purchase_order' });
+        const stRows = Array.isArray(stRes?.data) ? stRes.data : [];
+        pendingStatusId = stRows.find((s) => String(s.status_name || '').toLowerCase().includes('pending'))?.status_id ?? null;
+      } catch (_) {
+        /* optional — PO still created without status */
+      }
+      const createBody = {
+        ...apiCreatePayload,
+        ...(pendingStatusId ? { status_id: pendingStatusId } : {}),
+      };
+
+      let backendPoId;
+      try {
+        const res = await purchaseOrdersAPI.create(createBody);
+        const data = res?.data;
+        backendPoId = data?.po_id ?? data?.id;
+        if (backendPoId == null || backendPoId === '') {
+          setSubmitError('Server did not return a purchase order ID. Check the API response.');
           return;
         }
-      } else {
-        addApprovalQueueRestockRequest(restockEntry);
-        addApprovalQueuePurchaseOrder({
-          ...queuePoBase,
-          status: 'pending',
-          synced_to_api: false,
-          api_create_payload: null,
-          api_sync_note:
-            poDetails.length === 0
-              ? 'Add line items from Item Master (linked products) so the PO can be saved to the database on submit.'
-              : !locationIdForPo
-                ? 'No receiving location matched this branch; set up locations with branch_id in Location Management.'
-                : undefined,
-        });
+      } catch (apiErr) {
+        const msg = apiErr?.errors
+          ? Object.values(apiErr.errors).flat().join(' ')
+          : apiErr?.message || 'Could not save the purchase order to the database.';
+        setSubmitError(msg);
+        return;
       }
+
+      addApprovalQueueRestockRequest(restockEntry);
+      addApprovalQueuePurchaseOrder({
+        ...queuePoBase,
+        status: 'pending',
+        synced_to_api: true,
+        backend_po_id: backendPoId,
+        api_create_payload: null,
+        api_sync_note: undefined,
+      });
 
       addSystemNotification({
         type: 'approval',
@@ -522,7 +518,7 @@ const DraftPOCreator = () => {
       setSubmitting(false);
     }
   }, [
-    lineItems, selectedSupplierId, poDate, paymentTerms, selectedBranch,
+    lineItems, selectedSupplierId, poDate, paymentTerms, selectedBranch, loadingBranches,
     referenceNo, itemsSubtotal, appliedVat, totalEstimatedValue, selectedSupplierName, branches,
     expectedDeliveryDate,
   ]);
@@ -543,6 +539,45 @@ const DraftPOCreator = () => {
   }, [poDate]);
 
   const lineTypeLabel = (type) => (type === 'PART' ? 'PART' : 'APPLIANCE');
+
+  const draftPoExportPayload = useMemo(
+    () => ({
+      pc_number: referenceNo,
+      po_number: referenceNo,
+      order_date: poDate,
+      expected_delivery_date: expectedDeliveryDate,
+      grand_total: totalEstimatedValue,
+      total_amount: itemsSubtotal,
+      status: { status_name: 'Draft (not yet submitted)' },
+      supplier: { supplier_name: selectedSupplierName },
+      location: {
+        location_name:
+          branches.find((b) => String(b.id) === String(selectedBranch))?.location_name ||
+          branches.find((b) => String(b.id) === String(selectedBranch))?.name ||
+          '—',
+      },
+      details: lineItems
+        .filter((li) => li.productId != null && Number(li.productId) > 0)
+        .map((li) => ({
+          product_id: li.productId,
+          quantity_ordered: li.qty,
+          unit_price: li.unitCost,
+          subtotal: li.total,
+          product: { product_name: li.product },
+        })),
+    }),
+    [
+      referenceNo,
+      poDate,
+      expectedDeliveryDate,
+      totalEstimatedValue,
+      itemsSubtotal,
+      selectedSupplierName,
+      branches,
+      selectedBranch,
+      lineItems,
+    ],
+  );
 
   return (
     <AdminLayout>
@@ -597,7 +632,11 @@ const DraftPOCreator = () => {
               </div>
             </div>
             <div className="po-creator-header-actions">
-              <button type="button" className="po-btn po-btn-export-excel">
+              <button
+                type="button"
+                className="po-btn po-btn-export-excel"
+                onClick={() => downloadPoCsv(draftPoExportPayload)}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="15" height="15">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                   <polyline points="7 10 12 15 17 10"></polyline>
@@ -605,12 +644,28 @@ const DraftPOCreator = () => {
                 </svg>
                 EXPORT EXCEL
               </button>
-              <button type="button" className="po-btn po-btn-export-doc">
+              <button
+                type="button"
+                className="po-btn po-btn-export-doc"
+                onClick={() => downloadPoHtmlDocument(draftPoExportPayload)}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="15" height="15">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                   <polyline points="14 2 14 8 20 8"></polyline>
                 </svg>
                 EXPORT DOCUMENT
+              </button>
+              <button
+                type="button"
+                className="po-btn po-btn-export-doc"
+                onClick={() => openPoPrintPdf(draftPoExportPayload)}
+                title="Opens print dialog — choose Save as PDF"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="15" height="15">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                </svg>
+                EXPORT PDF
               </button>
               <button
                 type="button"
@@ -1059,4 +1114,4 @@ const DraftPOCreator = () => {
   );
 };
 
-export default DraftPOCreator;
+export default PurchaseOrderDraftCreator;

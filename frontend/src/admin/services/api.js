@@ -226,6 +226,18 @@ export const dashboardAPI = {
 };
 
 /* ======================
+   SYSTEM CONFIG API
+====================== */
+export const systemConfigAPI = {
+  get: async () => apiRequest('/system-config'),
+  update: async (data) =>
+    apiRequest('/system-config', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+};
+
+/* ======================
    AUDIT API
 ====================== */
 export const auditAPI = {
@@ -277,6 +289,14 @@ export const itemsAPI = {
     return apiRequest(query ? `/items?${query}` : '/items');
   },
   getById: async (id) => apiRequest(`/items/${id}`),
+  /** All product_id values in one request (replaces paging through /items). */
+  getIdList: async () => apiRequest('/items/id-list'),
+  /** Load many products by id in one request. */
+  batchLookup: async (productIds) =>
+    apiRequest('/items/batch-lookup', {
+      method: 'POST',
+      body: JSON.stringify({ product_ids: productIds }),
+    }),
   create: async (data) =>
     apiRequest('/items', {
       method: 'POST',
@@ -327,6 +347,12 @@ export const inventoryAPI = {
     apiRequest('/inventory/scan-transaction', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  /** Multiple scan operations in one HTTP request (same shape as scanTransaction each). */
+  scanTransactionBatch: async (transactions) =>
+    apiRequest('/inventory/scan-transaction-batch', {
+      method: 'POST',
+      body: JSON.stringify({ transactions }),
     }),
 };
 
@@ -390,6 +416,10 @@ export const purchaseOrdersAPI = {
     apiRequest('/purchase-orders', { method: 'POST', body: JSON.stringify(data) }),
   update: async (id, data) =>
     apiRequest(`/purchase-orders/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  approve: async (id) =>
+    apiRequest(`/purchase-orders/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
+  reject: async (id, data = {}) =>
+    apiRequest(`/purchase-orders/${id}/reject`, { method: 'POST', body: JSON.stringify(data) }),
   delete: async (id) =>
     apiRequest(`/purchase-orders/${id}`, { method: 'DELETE' }),
 };
@@ -619,6 +649,12 @@ export const productsAPI = {
     return apiRequest(query ? `/products?${query}` : '/products');
   },
   getById: async (id) => apiRequest(`/products/${id}`),
+  getIdList: async () => apiRequest('/products/id-list'),
+  batchLookup: async (productIds) =>
+    apiRequest('/products/batch-lookup', {
+      method: 'POST',
+      body: JSON.stringify({ product_ids: productIds }),
+    }),
   create: async (data) =>
     apiRequest('/products', {
       method: 'POST',

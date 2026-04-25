@@ -18,8 +18,10 @@ const routePrefetchMap = {
   '/admin/brands': () => import('../pages/CategoryBrandManagement'),
   '/admin/items': () => import('../pages/ItemManagement'),
   '/admin/suppliers': () => import('../pages/SupplierNetwork'),
-  '/admin/po-recommendations': () => import('../pages/PORecommendation'),
-  '/admin/draft-po-creator': () => import('../pages/DraftPOCreator'),
+  '/admin/po-recommendations': () => import('../pages/PurchaseOrderRecommendation'),
+  '/admin/draft-po-creator': () => import('../pages/PurchaseOrderDraftCreator'),
+  '/admin/purchase-orders': () => import('../pages/PurchaseOrderListPage'),
+  '/admin/approval-queue': () => import('../pages/PurchaseOrderApprovalQueue'),
   '/admin/receivings': () => import('../pages/ReceivingManagement'),
   '/admin/inventory': () => import('../pages/InventoryManagement'),
   '/admin/transfers': () => import('../pages/StockTransferManagement'),
@@ -31,7 +33,8 @@ const routePrefetchMap = {
   '/admin/delivery-receipts': () => import('../pages/DeliveryReceiptManagement'),
   '/admin/purchase-returns': () => import('../pages/PurchaseReturnManagement'),
   '/admin/reports': () => import('../pages/SystemReports'),
-  '/admin/audit': () => import('../pages/AuditTrail'),
+  '/admin/audit': () => import('../pages/AuditTrailPage'),
+  '/admin/audit-trail': () => import('../pages/AuditTrailPage'),
   '/admin/profit-loss': () => import('../pages/ProfitLossManagement'),
 };
 
@@ -55,6 +58,30 @@ const AdminLayout = ({ children }) => {
   const location = useLocation();
   const { user: _user, clearSession } = useAuth();
   const user = _user || {};
+
+  // Auto-logout after inactivity (minimum 5 minutes).
+  const idleTimerRef = useRef(null);
+  const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = window.setTimeout(() => {
+      clearSession();
+      try { authAPI.logout(); } catch (_) {}
+      navigate('/admin/login', { replace: true });
+    }, IDLE_TIMEOUT_MS);
+  }, [clearSession, navigate]);
+
+  useEffect(() => {
+    resetIdleTimer();
+    const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'];
+    const handler = () => resetIdleTimer();
+    events.forEach((evt) => window.addEventListener(evt, handler, { passive: true }));
+    return () => {
+      events.forEach((evt) => window.removeEventListener(evt, handler));
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    };
+  }, [resetIdleTimer]);
 
   // Role-based setup
   const roleKey = useMemo(() => getRoleKey(user), [user]);

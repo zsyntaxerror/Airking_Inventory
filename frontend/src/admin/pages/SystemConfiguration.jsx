@@ -1,27 +1,57 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import AdminLayout from '../components/AdminLayout';
+import { systemConfigAPI } from '../services/api';
 import { toast } from '../utils/toast';
 import '../styles/system_configuration.css';
 
+const DEFAULT_SETTINGS = {
+  companyName: 'Airking Air Conditioning',
+  systemEmail: 'system@airking.com',
+  timeZone: 'Asia/Manila',
+  currency: 'PHP',
+  reorderLevel: '20',
+  safetyStock: '10',
+  autoGenerateSKU: true,
+  lowStockAlerts: true,
+  twoFactorAuth: false,
+  sessionTimeout: false,
+  passwordExpiry: false,
+  loginAttempts: true,
+  emailNotifications: true,
+  dailyReports: true,
+  transactionAlerts: false,
+  notificationRecipients: 'admin@airking.com, manager@airking.com',
+};
+
 const SystemConfiguration = () => {
-  const [settings, setSettings] = useState({
-    companyName: 'Airking Air Conditioning',
-    systemEmail: 'system@airking.com',
-    timeZone: '',
-    currency: '',
-    reorderLevel: '20',
-    safetyStock: '10',
-    autoGenerateSKU: true,
-    lowStockAlerts: true,
-    twoFactorAuth: false,
-    sessionTimeout: false,
-    passwordExpiry: false,
-    loginAttempts: true,
-    emailNotifications: true,
-    dailyReports: true,
-    transactionAlerts: false,
-    notificationRecipients: 'admin@airking.com, manager@airking.com',
-  });
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const res = await systemConfigAPI.get();
+        const payload = res?.data || {};
+        if (!mounted) return;
+        setSettings({
+          ...DEFAULT_SETTINGS,
+          ...payload,
+          reorderLevel: String(payload?.reorderLevel ?? DEFAULT_SETTINGS.reorderLevel),
+          safetyStock: String(payload?.safetyStock ?? DEFAULT_SETTINGS.safetyStock),
+        });
+      } catch (err) {
+        if (!mounted) return;
+        toast.error(err.message || 'Failed to load system configuration.');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    load();
+    return () => { mounted = false; };
+  }, []);
 
   const handleChange = (field, value) => {
     setSettings(prev => ({ ...prev, [field]: value }));
@@ -32,28 +62,24 @@ const SystemConfiguration = () => {
   };
 
   const handleResetDefaults = () => {
-    setSettings({
-      companyName: 'Airking Air Conditioning',
-      systemEmail: 'system@airking.com',
-      timeZone: '',
-      currency: '',
-      reorderLevel: '20',
-      safetyStock: '10',
-      autoGenerateSKU: true,
-      lowStockAlerts: true,
-      twoFactorAuth: false,
-      sessionTimeout: false,
-      passwordExpiry: false,
-      loginAttempts: true,
-      emailNotifications: true,
-      dailyReports: true,
-      transactionAlerts: false,
-      notificationRecipients: 'admin@airking.com, manager@airking.com',
-    });
+    setSettings(DEFAULT_SETTINGS);
   };
 
-  const handleSave = () => {
-    toast.success('Settings saved successfully!');
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        ...settings,
+        reorderLevel: Number(settings.reorderLevel || 0),
+        safetyStock: Number(settings.safetyStock || 0),
+      };
+      await systemConfigAPI.update(payload);
+      toast.success('Settings saved successfully!');
+    } catch (err) {
+      toast.error(err.message || 'Failed to save settings.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -66,6 +92,9 @@ const SystemConfiguration = () => {
         </div>
 
         {/* Settings Grid */}
+        {loading ? (
+          <div className="sc-card"><div className="sc-card-body">Loading configuration...</div></div>
+        ) : (
         <div className="sc-grid">
           {/* Left Column */}
           <div className="sc-column">
@@ -287,11 +316,14 @@ const SystemConfiguration = () => {
             </div>
           </div>
         </div>
+        )}
 
         {/* Footer Actions */}
         <div className="sc-footer">
           <button className="sc-btn-reset" onClick={handleResetDefaults}>Reset to Default</button>
-          <button className="sc-btn-save" onClick={handleSave}>Save All Changes</button>
+          <button className="sc-btn-save" onClick={handleSave} disabled={loading || saving}>
+            {saving ? 'Saving...' : 'Save All Changes'}
+          </button>
         </div>
       </div>
     </AdminLayout>

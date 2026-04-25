@@ -3,7 +3,11 @@ import { useLocation } from 'react-router-dom';
 import AdminLayout from '../components/AdminLayout';
 import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
-import { canActOnApprovalQueue, canApprovePendingRegistrations } from '../utils/roles';
+import {
+  canActOnApprovalQueue,
+  canApprovePendingRegistrations,
+  canApprovePurchaseOrders,
+} from '../utils/roles';
 import {
   getApprovalQueuePurchaseOrders,
   getApprovalQueueRestockRequests,
@@ -11,7 +15,7 @@ import {
   updateApprovalQueueRestockRequestStatus,
   mergeApprovalQueuePurchaseOrder,
 } from '../utils/approvalNotifications';
-import { purchaseOrdersAPI, statusAPI, productsAPI, pendingProductsAPI, consumableSupplyAPI } from '../services/api';
+import { purchaseOrdersAPI, productsAPI, pendingProductsAPI, consumableSupplyAPI } from '../services/api';
 import { toast } from '../utils/toast';
 import '../styles/approval_queue.css';
 
@@ -47,10 +51,11 @@ const formatDateTime = (value) => {
   });
 };
 
-const ApprovalQueue = ({ initialTab } = {}) => {
+const PurchaseOrderApprovalQueue = ({ initialTab } = {}) => {
   const { user } = useAuth();
   const canActOnQueue = useMemo(() => canActOnApprovalQueue(user), [user]);
   const canApproveRegistrations = useMemo(() => canApprovePendingRegistrations(user), [user]);
+  const canApprovePo = useMemo(() => canApprovePurchaseOrders(user), [user]);
   const location = useLocation();
   const [activeTab, setActiveTab] = useState(() => {
     if (typeof window === 'undefined') return 'restock-requests';
@@ -194,27 +199,36 @@ const ApprovalQueue = ({ initialTab } = {}) => {
       setPoVerifyError('');
       (async () => {
         try {
-          const rows = await Promise.all(
-            payloadDetails.map(async (d, i) => {
-              const pid = d.product_id;
-              let name = `Product #${pid}`;
-              try {
-                const res = await productsAPI.getById(pid);
-                const p = res?.data;
-                name = p?.product_name || p?.name || name;
-              } catch {
-                /* keep fallback label */
-              }
-              return {
-                key: `pay-${i}`,
-                name,
-                product_id: pid,
-                qty: d.quantity_ordered,
-                unit: d.unit_price,
-                lineTotal: d.subtotal,
-              };
-            }),
-          );
+          const ids = [...new Set(
+            payloadDetails.map((d) => d.product_id).filter((id) => id != null && id !== ''),
+          )].map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0);
+          let nameById = new Map();
+          if (ids.length) {
+            const chunkSize = 500;
+            for (let i = 0; i < ids.length; i += chunkSize) {
+              const slice = ids.slice(i, i + chunkSize);
+              const res = await productsAPI.batchLookup(slice);
+              const list = Array.isArray(res?.data) ? res.data : [];
+              list.forEach((p) => {
+                nameById.set(
+                  Number(p.product_id),
+                  p?.product_name || p?.name || `Product #${p.product_id}`,
+                );
+              });
+            }
+          }
+          const rows = payloadDetails.map((d, i) => {
+            const pid = d.product_id;
+            const pidNum = Number(pid);
+            return {
+              key: `pay-${i}`,
+              name: nameById.get(pidNum) || `Product #${pid}`,
+              product_id: pid,
+              qty: d.quantity_ordered,
+              unit: d.unit_price,
+              lineTotal: d.subtotal,
+            };
+          });
           setPoVerifyLines(rows);
         } catch {
           setPoVerifyError('Could not load product names for this PO.');
@@ -342,7 +356,31 @@ const ApprovalQueue = ({ initialTab } = {}) => {
 
   const handlePOAction = async (id, action) => {
     const nextStatus = action === 'approve' ? 'authorized' : 'rejected';
+
     if (action === 'reject') {
+      const row = purchaseOrders.find((p) => p.id === id);
+      if (row?.synced_to_api && row?.backend_po_id) {
+        if (!canApprovePo) {
+          toast.error('Only an Admin can reject purchase orders on the server.');
+          return;
+        }
+        setPoActionLoading(id);
+        try {
+          await purchaseOrdersAPI.reject(String(row.backend_po_id));
+          const patch = { status: 'rejected' };
+          mergeApprovalQueuePurchaseOrder(id, patch);
+          setPurchaseOrders((prev) => prev.map((po) => (po.id === id ? { ...po, ...patch } : po)));
+          toast.success('PO rejected on the server. It remains on record.');
+        } catch (err) {
+          const msg = err?.errors
+            ? Object.values(err.errors).flat().join(' ')
+            : err?.message || 'Could not reject this PO on the server.';
+          toast.error(msg);
+        } finally {
+          setPoActionLoading(null);
+        }
+        return;
+      }
       setPurchaseOrders((prev) =>
         prev.map((po) => (po.id === id ? { ...po, status: nextStatus } : po)),
       );
@@ -352,20 +390,15 @@ const ApprovalQueue = ({ initialTab } = {}) => {
 
     const po = purchaseOrders.find((p) => p.id === id);
 
+    if (!canApprovePo) {
+      toast.error('Only an Admin can approve purchase orders on the server.');
+      return;
+    }
+
     if (po?.synced_to_api && po?.backend_po_id && !po.api_create_payload) {
       setPoActionLoading(id);
       try {
-        const stRes = await statusAPI.getAll({ category: 'purchase_order' });
-        const stRows = Array.isArray(stRes?.data) ? stRes.data : [];
-        const authorizedId = stRows.find((s) => {
-          const n = String(s.status_name || '').toLowerCase();
-          return n === 'authorized' || n.includes('authori');
-        })?.status_id;
-        if (!authorizedId) {
-          toast.error('No Authorized status for purchase orders. Run backend migrations, then try again.');
-          return;
-        }
-        await purchaseOrdersAPI.update(String(po.backend_po_id), { status_id: authorizedId });
+        await purchaseOrdersAPI.approve(String(po.backend_po_id));
         const patch = {
           status: 'authorized',
           approved_at: new Date().toISOString(),
@@ -374,17 +407,16 @@ const ApprovalQueue = ({ initialTab } = {}) => {
         setPurchaseOrders((prev) =>
           prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
         );
-        toast.success('PO authorized on the server. It stays in Receive PO; receiving follows expected date rules.');
+        toast.success('PO approved on the server. Receiving follows expected date rules.');
       } catch (err) {
         if (err?.status === 403) {
-          toast.error('This account cannot update purchase orders on the server.');
+          toast.error('This account cannot approve purchase orders.');
           return;
         }
         const msg = err?.errors
           ? Object.values(err.errors).flat().join(' ')
-          : err?.message || 'Could not authorize this PO on the server.';
+          : err?.message || 'Could not approve this PO on the server.';
         toast.error(msg);
-        return;
       } finally {
         setPoActionLoading(null);
       }
@@ -401,6 +433,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
           toast.error('Server saved the PO but did not return an ID. Check the network response.');
           return;
         }
+        await purchaseOrdersAPI.approve(String(backendId));
         const patch = {
           status: 'authorized',
           synced_to_api: true,
@@ -412,17 +445,16 @@ const ApprovalQueue = ({ initialTab } = {}) => {
         setPurchaseOrders((prev) =>
           prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
         );
-        toast.success('PO saved to the server. It appears in Receive PO now (merged with your purchase order list).');
+        toast.success('PO saved and approved on the server.');
       } catch (err) {
         if (err?.status === 403) {
-          toast.error('This account cannot create purchase orders on the server. Use an Admin, Inventory Analyst, or Branch Manager account to approve.');
+          toast.error('This account cannot create or approve purchase orders on the server.');
           return;
         }
         const msg = err?.errors
           ? Object.values(err.errors).flat().join(' ')
-          : err?.message || 'Could not create this PO on the server.';
+          : err?.message || 'Could not save this PO on the server.';
         toast.error(msg);
-        return;
       } finally {
         setPoActionLoading(null);
       }
@@ -435,7 +467,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
     updateApprovalQueuePurchaseOrderStatus(id, nextStatus);
     if (!po?.api_create_payload) {
       toast.warning(
-        'Approved locally only — not sent to server. Receive PO will not list this unless it was synced (Draft PO with Item Master lines + branch location) or created in the database.',
+        'Approved locally only — not sent to server. Use Draft PO with Item Master lines and a branch so the PO is created in the database.',
       );
     }
   };
@@ -459,36 +491,18 @@ const ApprovalQueue = ({ initialTab } = {}) => {
           <h1>Approvals</h1>
           {!canActOnQueue && !canApproveRegistrations && (
             <p className="aq-viewonly-banner">
-              <strong>View only.</strong> Only <strong>Admin</strong> and <strong>Branch Manager</strong> can approve
-              item registrations and authorize purchase orders / restock here. You can review and open PO line items
-              with the eye icon.
+              <strong>View only.</strong> Only <strong>Admin</strong> and <strong>Branch Manager</strong> can act on
+              restock requests; only <strong>Admin</strong> can approve or reject purchase orders on the server. You can
+              review PO line items with the eye icon and open the full list under Purchase Orders.
             </p>
           )}
           {!canActOnQueue && canApproveRegistrations && (
             <p className="aq-viewonly-banner">
               <strong>Item registration:</strong> you can approve pending catalog submissions.{' '}
-              <strong>Purchase orders</strong> and <strong>restock</strong> on this page are view-only unless you are
-              Admin or Branch Manager.
+              <strong>Purchase orders</strong> (approve/reject) require an <strong>Admin</strong>;{' '}
+              <strong>restock</strong> uses Admin or Branch Manager.
             </p>
           )}
-          <p>
-            <strong>Item registration</strong> is approval-only: confirm the catalog name here;{' '}
-            <strong>unit price and cost</strong> are set later in <strong>Item Master</strong>. When a draft has{' '}
-            <strong>Item Master</strong> lines and a{' '}
-            <strong>branch-linked location</strong>, <strong>Final Submission</strong> creates the purchase order in the{' '}
-            <strong>database</strong> immediately (status Pending Approval) so it appears in <strong>Receive PO</strong>.{' '}
-            {canActOnQueue ? (
-              <>
-                <strong>Approve</strong> sets it to <strong>Authorized</strong> on the server. Receiving stays blocked
-                until authorized and on or after the expected delivery date when set.
-              </>
-            ) : (
-              <>
-                <strong>Admin</strong> or <strong>Branch Manager</strong> must <strong>Authorize</strong> on the server
-                before receiving can proceed (expected delivery date rules still apply).
-              </>
-            )}
-          </p>
         </div>
 
         {/* Tab Navigation */}
@@ -527,7 +541,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
               <polyline points="14 2 14 8 20 8"></polyline>
             </svg>
-            Purchase orders (local)
+            Purchase orders
           </button>
           <button
             type="button"
@@ -679,15 +693,15 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                         className="aq-meta"
                         style={{ display: 'block', marginTop: 4, color: po.synced_to_api ? '#1d4ed8' : '#b45309' }}
                       >
-                        {canActOnQueue
+                        {canApprovePo
                           ? po.synced_to_api
-                            ? 'Saved in the database (Pending Approval). Approve here to set Authorized — then Receive PO can post against it (expected date rules still apply).'
-                            : `Pending approval — Receive PO is blocked until you approve${
+                            ? 'Saved in the database (pending). Approve here to authorize — then Receive PO can post (expected date rules still apply).'
+                            : `Pending — Receive PO is blocked until you approve${
                                 po.api_create_payload ? ' (legacy: will create on server when approved).' : '.'
                               }`
                           : po.synced_to_api
-                            ? 'Saved in the database (Pending Approval). Awaiting Admin or Branch Manager authorization before Receive PO can post against it.'
-                            : 'Pending approval — Receive PO stays blocked until an Admin or Branch Manager approves.'}
+                            ? 'Saved in the database (pending). An Admin must approve before Receive PO can post against it.'
+                            : 'Pending — Receive PO stays blocked until an Admin approves.'}
                       </span>
                     )}
                     {po.status === 'pending' && po.api_sync_note && (
@@ -719,7 +733,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                       </span>
                     ) : po.status === 'rejected' ? (
                       <span className="aq-badge rejected">REJECTED</span>
-                    ) : canActOnQueue ? (
+                    ) : canApprovePo ? (
                       <>
                         <button
                           type="button"
@@ -748,7 +762,7 @@ const ApprovalQueue = ({ initialTab } = {}) => {
                         </button>
                       </>
                     ) : (
-                      <span className="aq-badge view-only">PENDING — view only</span>
+                      <span className="aq-badge view-only">PENDING — admin only</span>
                     )}
                   </div>
                 </div>
@@ -947,4 +961,4 @@ const ApprovalQueue = ({ initialTab } = {}) => {
   );
 };
 
-export default ApprovalQueue;
+export default PurchaseOrderApprovalQueue;

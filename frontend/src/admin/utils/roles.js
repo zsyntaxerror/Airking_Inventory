@@ -211,6 +211,7 @@ export const ROUTE_ACCESS = {
   '/admin/analytics': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.AUDITOR],
   '/admin/reports': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.WAREHOUSE_PERSONNEL, ROLES.AUDITOR],
   '/admin/audit': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.AUDITOR],
+  '/admin/audit-trail': [ROLES.ADMIN, ROLES.INVENTORY_ANALYST, ROLES.BRANCH_MANAGER, ROLES.AUDITOR],
   '/admin/compliance': Object.values(ROLES),
   '/admin/alerts': [ROLES.ADMIN],
   '/admin/notifications': [ROLES.ADMIN],
@@ -220,7 +221,7 @@ export const ROUTE_ACCESS = {
   '/admin/roles': [ROLES.ADMIN],
   '/admin/config': [ROLES.ADMIN],
   '/admin/archive': [ROLES.ADMIN, ROLES.AUDITOR],
-  // Approval Queue: analysts approve item registration; auditors read-only; PO/restock actions: admin & branch manager (canActOnApprovalQueue).
+  // Approval Queue: analysts approve item registration; auditors read-only; restock: admin & branch manager; PO server approve/reject: admin only.
   '/admin/approval-queue': [ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.AUDITOR, ROLES.INVENTORY_ANALYST],
 
   // Item/barcode/classification
@@ -268,6 +269,10 @@ export const ROUTE_ACCESS = {
 export const canAccessRoute = (user, path) => {
   const role = getRoleKey(user);
   if (!role) return false;
+  if (/^\/admin\/purchase-orders\/.+/.test(path)) {
+    const baseAllowed = ROUTE_ACCESS['/admin/purchase-orders'];
+    if (baseAllowed?.includes(role)) return true;
+  }
   const allowed = ROUTE_ACCESS[path];
   if (!allowed) return role === ROLES.ADMIN;
   return allowed.includes(role);
@@ -278,6 +283,9 @@ export const canActOnApprovalQueue = (user) => {
   const r = getRoleKey(user);
   return r === ROLES.ADMIN || r === ROLES.BRANCH_MANAGER;
 };
+
+/** Approve or reject purchase orders on the server (database workflow). Admin only. */
+export const canApprovePurchaseOrders = (user) => getRoleKey(user) === ROLES.ADMIN;
 
 /** Approve pending product registrations (Item registration tab) — matches API pending-products/approve. */
 export const canApprovePendingRegistrations = (user) => {

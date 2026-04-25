@@ -10,6 +10,7 @@ const UserManagement = () => {
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [branches, setBranches] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -31,17 +32,18 @@ const UserManagement = () => {
   const [formData, setFormData] = useState({
     first_name: '', last_name: '', username: '', email: '',
     password: '', password_confirmation: '',
-    phone: '', role_id: '', branch_id: '', status_id: 1
+    phone: '', role_id: '', branch_id: '', assigned_location_id: '', status_id: 1
   });
 
-  // Load reference data (roles, branches) once on mount
+  // Load reference data (roles, branches, locations) once on mount
   useEffect(() => {
     const loadReferenceData = async () => {
       try {
-        const res = await batchAPI.get({ include: ['roles', 'branches'] });
+        const res = await batchAPI.get({ include: ['roles', 'branches', 'locations'] });
         const data = res?.data ?? {};
         setRoles(Array.isArray(data.roles?.data) ? data.roles.data : []);
         setBranches(Array.isArray(data.branches?.data) ? data.branches.data : []);
+        setLocations(Array.isArray(data.locations?.data) ? data.locations.data : []);
       } catch (err) {
         console.error('Failed to fetch reference data:', err);
       }
@@ -106,6 +108,15 @@ const UserManagement = () => {
     return user.status_id === 1 ? 'Active' : 'Inactive';
   };
   const getUserId = (user) => user.user_id || user.id || 'N/A';
+  const getLocationId = (location) => Number(location?.location_id ?? location?.id ?? 0);
+  const branchNameById = branches.reduce((acc, branch) => {
+    acc[Number(branch.id)] = branch.name;
+    return acc;
+  }, {});
+  const assignmentLocations = locations.filter((loc) => {
+    const locationType = String(loc?.location_type || '').toLowerCase();
+    return !locationType || ['warehouse', 'showroom', 'service_center', 'distribution_center'].includes(locationType);
+  });
 
   // Stats from pagination metadata
   const totalUsers = pagination.total || 0;
@@ -115,7 +126,7 @@ const UserManagement = () => {
     setFormData({
       first_name: '', last_name: '', username: '', email: '',
       password: '', password_confirmation: '',
-      phone: '', role_id: '', branch_id: '', status_id: 1
+      phone: '', role_id: '', branch_id: '', assigned_location_id: '', status_id: 1
     });
     setFormErrors({});
     setSubmitError('');
@@ -134,6 +145,9 @@ const UserManagement = () => {
       phone: user.phone || '',
       role_id: user.role_id || '',
       branch_id: user.branch_id || '',
+      assigned_location_id: Array.isArray(user.assigned_location_ids) && user.assigned_location_ids.length > 0
+        ? String(user.assigned_location_ids[0])
+        : '',
       status_id: user.status_id || 1
     });
     setFormErrors({});
@@ -199,12 +213,18 @@ const UserManagement = () => {
     try {
       if (editingUser) {
         const payload = { ...formData };
+        const assignedLocationId = payload.assigned_location_id ? Number(payload.assigned_location_id) : null;
+        const selectedLocation = assignedLocationId
+          ? assignmentLocations.find((loc) => getLocationId(loc) === assignedLocationId)
+          : null;
         if (!payload.password) {
           delete payload.password;
           delete payload.password_confirmation;
         }
         payload.role_id = Number(payload.role_id) || null;
-        payload.branch_id = Number(payload.branch_id) || null;
+        payload.branch_id = selectedLocation?.branch_id ? Number(selectedLocation.branch_id) : null;
+        payload.assigned_location_ids = assignedLocationId ? [assignedLocationId] : null;
+        delete payload.assigned_location_id;
         payload.status_id = Number(payload.status_id) || 1;
         const id = editingUser.user_id || editingUser.id;
         await usersAPI.update(id, payload);
@@ -213,7 +233,11 @@ const UserManagement = () => {
         await fetchUsers(currentPage);
       } else {
         const roleId = Number(formData.role_id);
-        const branchId = formData.branch_id ? Number(formData.branch_id) : null;
+        const assignedLocationId = formData.assigned_location_id ? Number(formData.assigned_location_id) : null;
+        const selectedLocation = assignedLocationId
+          ? assignmentLocations.find((loc) => getLocationId(loc) === assignedLocationId)
+          : null;
+        const branchId = selectedLocation?.branch_id ? Number(selectedLocation.branch_id) : null;
         if (!roleId || !formData.password || formData.password.length < 8) {
           setSubmitting(false);
           return;
@@ -228,6 +252,7 @@ const UserManagement = () => {
           phone: (formData.phone && String(formData.phone).trim()) || null,
           role_id: roleId,
           branch_id: branchId,
+          assigned_location_ids: assignedLocationId ? [assignedLocationId] : null,
           status_id: 1,
         };
         await usersAPI.create(payload);
@@ -443,7 +468,7 @@ const UserManagement = () => {
           )}
           {!editingUser && (
             <p style={{ marginBottom: '16px', fontSize: '13px', color: '#6b7280' }}>
-              Enter the new user's personal information, account credentials, then choose their role and branch.
+              Enter the new user's personal information, account credentials, then choose their role and assigned inventory operation location.
             </p>
           )}
           {/* Personal Information Section */}
@@ -515,21 +540,29 @@ const UserManagement = () => {
                 </select>
                 {formErrors.role_id && <span className="um-field-error">{formErrors.role_id}</span>}
               </div>
-              {editingUser && (
-                <div className="form-group">
-                  <label>Assigned Branch</label>
-                  <select value={formData.branch_id} onChange={(e) => setFormData({...formData, branch_id: e.target.value})}>
-                    <option value="">Select Branch</option>
-                    {branches.map(branch => (
-                      <option key={branch.id} value={branch.id}>
-                        {branch.name}{branch.code ? ` (${branch.code})` : ''}
+              <div className="form-group">
+                <label>Assigned Inventory Location / Branch</label>
+                <select value={formData.assigned_location_id} onChange={(e) => setFormData({...formData, assigned_location_id: e.target.value})}>
+                  <option value="">Select operation location (optional)</option>
+                  {assignmentLocations.map((location) => {
+                    const locId = getLocationId(location);
+                    const locationName = location.location_name || location.name || `Location #${locId}`;
+                    const branchName = branchNameById[Number(location.branch_id)] || 'No branch assigned';
+                    return (
+                      <option key={locId} value={locId}>
+                        {locationName} - {branchName}
                       </option>
-                    ))}
-                  </select>
-                  {formErrors.branch_id && <span className="um-field-error">{formErrors.branch_id}</span>}
-                </div>
-              )}
-              {!editingUser && <div className="form-group"></div>}
+                    );
+                  })}
+                </select>
+                {formErrors.assigned_location_ids && <span className="um-field-error">{formErrors.assigned_location_ids}</span>}
+                {assignmentLocations.length === 0 && (
+                  <small style={{ display: 'block', marginTop: '6px', color: '#6b7280' }}>
+                    No operational locations available yet. Add warehouse/showroom locations in Branch Management.
+                  </small>
+                )}
+                {formErrors.branch_id && <span className="um-field-error">{formErrors.branch_id}</span>}
+              </div>
             </div>
             {editingUser && (
               <div className="form-row">
