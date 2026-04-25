@@ -4,8 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Traits\ApiResponse;
+use App\Models\Location;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderDetail;
+use App\Support\AuditTrailLogger;
+use App\Support\PurchaseOrderWorkflow;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\DB;
@@ -60,8 +63,14 @@ class PurchaseOrderController extends Controller
                 $payload['order_date'] = $payload['po_date'];
             }
             if (empty($payload['location_id']) && !empty($payload['branch_id'])) {
-                // Draft PO uses branch/location selector; map directly.
-                $payload['location_id'] = $payload['branch_id'];
+                $branchId = (int) $payload['branch_id'];
+                $loc = Location::where('branch_id', $branchId)
+                    ->orderByRaw("CASE WHEN LOWER(COALESCE(location_type,'')) = 'warehouse' THEN 0 ELSE 1 END")
+                    ->orderBy('location_id')
+                    ->first();
+                if ($loc) {
+                    $payload['location_id'] = $loc->location_id;
+                }
             }
             if (empty($payload['details']) && !empty($payload['items']) && is_array($payload['items'])) {
                 $payload['details'] = array_map(function ($item) {
@@ -75,6 +84,13 @@ class PurchaseOrderController extends Controller
             }
 
             $request->replace($payload);
+
+            if (empty($payload['location_id'])) {
+                return $this->error(
+                    'No receiving location could be resolved for this purchase order. Link a location to the branch in Location Management, or send location_id.',
+                    422
+                );
+            }
 
             $validated = $request->validate([
                 'supplier_id'             => 'required|exists:suppliers,supplier_id',
@@ -99,9 +115,16 @@ class PurchaseOrderController extends Controller
                 $validated['created_by'] = $request->user()->user_id;
             }
 
+            if (empty($validated['status_id'])) {
+                $pendingId = PurchaseOrderWorkflow::statusIdForPurchaseOrder('pending');
+                if ($pendingId) {
+                    $validated['status_id'] = $pendingId;
+                }
+            }
+
             DB::beginTransaction();
 
-            $po = PurchaseOrder::create(Arr::except($validated, ['details']));
+            $po = PurchaseOrder::create(Arr::except($validated, ['details', 'branch_id']));
 
             $totalAmount = 0;
             foreach ($validated['details'] as $detail) {
@@ -119,7 +142,19 @@ class PurchaseOrderController extends Controller
 
             DB::commit();
 
-            return $this->success($po->load(['supplier', 'location', 'createdBy', 'approvedBy', 'status', 'details.product']), 'Purchase order created successfully', 201);
+            $po = $po->fresh()->load(['supplier', 'location', 'createdBy', 'approvedBy', 'status', 'details.product']);
+            if ($request->user()) {
+                AuditTrailLogger::record(
+                    $request->user(),
+                    $request,
+                    'Created purchase order '.$po->pc_number,
+                    'purchase_orders',
+                    (int) $po->po_id,
+                    ['pc_number' => $po->pc_number, 'status_id' => $po->status_id]
+                );
+            }
+
+            return $this->success($po, 'Purchase order created successfully', 201);
         } catch (ValidationException $e) {
             return $this->validationError($e->errors());
         } catch (\Exception $e) {
@@ -212,6 +247,88 @@ class PurchaseOrderController extends Controller
             return $this->success(null, 'Purchase order deleted successfully');
         } catch (\Exception $e) {
             return $this->error('Failed to delete purchase order: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function approve(Request $request, $id)
+    {
+        try {
+            $po = PurchaseOrder::with('status')->findOrFail($id);
+            $name = strtolower($po->status->status_name ?? '');
+            if (str_contains($name, 'reject')) {
+                return $this->error('This purchase order was rejected and cannot be approved.', 422);
+            }
+            $authorizedId = PurchaseOrderWorkflow::statusIdForPurchaseOrder('authorized');
+            if (!$authorizedId) {
+                return $this->error('Authorized / approved status is not configured for purchase orders.', 500);
+            }
+            $po->update([
+                'status_id'   => $authorizedId,
+                'approved_by' => $request->user()->user_id,
+            ]);
+
+            $po = $po->fresh()->load(['supplier', 'location', 'createdBy', 'approvedBy', 'status', 'details.product']);
+            AuditTrailLogger::record(
+                $request->user(),
+                $request,
+                'Approved purchase order '.$po->pc_number,
+                'purchase_orders',
+                (int) $po->po_id,
+                ['pc_number' => $po->pc_number, 'status_id' => $po->status_id]
+            );
+
+            return $this->success($po, 'Purchase order approved');
+        } catch (\Exception $e) {
+            return $this->error('Failed to approve purchase order: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function reject(Request $request, $id)
+    {
+        try {
+            $request->validate([
+                'notes' => 'nullable|string|max:2000',
+            ]);
+            $po = PurchaseOrder::with('status')->findOrFail($id);
+            $name = strtolower($po->status->status_name ?? '');
+            if (str_contains($name, 'reject')) {
+                return $this->error('This purchase order is already rejected.', 422);
+            }
+            if (str_contains($name, 'authori') || str_contains($name, 'approved')) {
+                return $this->error('An approved purchase order cannot be rejected.', 422);
+            }
+            if (str_contains($name, 'partial') || ($name === 'fulfilled' || str_contains($name, 'fulfill'))) {
+                return $this->error('Cannot reject a purchase order that has receivings affecting its status.', 422);
+            }
+            $rejectedId = PurchaseOrderWorkflow::statusIdForPurchaseOrder('rejected');
+            if (!$rejectedId) {
+                return $this->error('Rejected status is not configured for purchase orders.', 500);
+            }
+            $notes = $request->input('notes');
+            $po->update([
+                'status_id'   => $rejectedId,
+                'approved_by' => $request->user()->user_id,
+            ]);
+
+            $po = $po->fresh()->load(['supplier', 'location', 'createdBy', 'approvedBy', 'status', 'details.product']);
+            AuditTrailLogger::record(
+                $request->user(),
+                $request,
+                'Rejected purchase order '.$po->pc_number,
+                'purchase_orders',
+                (int) $po->po_id,
+                array_filter([
+                    'pc_number' => $po->pc_number,
+                    'status_id' => $po->status_id,
+                    'notes' => $notes ? (string) $notes : null,
+                ])
+            );
+
+            return $this->success($po, 'Purchase order rejected');
+        } catch (ValidationException $e) {
+            return $this->validationError($e->errors());
+        } catch (\Exception $e) {
+            return $this->error('Failed to reject purchase order: ' . $e->getMessage(), 500);
         }
     }
 }

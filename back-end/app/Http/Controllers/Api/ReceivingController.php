@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Traits\ApiResponse;
+use App\Models\PurchaseOrder;
 use App\Models\Receiving;
 use App\Models\ReceivingDetail;
 use App\Models\Inventory;
 use App\Models\Product;
+use App\Support\AuditTrailLogger;
+use App\Support\PurchaseOrderWorkflow;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\DB;
@@ -98,7 +101,27 @@ class ReceivingController extends Controller
             $productIds = array_map(fn ($d) => (int) $d['product_id'], $validated['details']);
             Product::syncQuantityFromInventoryMany($productIds);
 
-            return $this->success($receiving->load(['purchaseOrder', 'location', 'details.product']), 'Receiving created successfully', 201);
+            PurchaseOrderWorkflow::refreshFulfillmentStatus((int) $validated['pc_id']);
+
+            $receiving->load(['purchaseOrder', 'location', 'details.product']);
+            $po = $receiving->purchaseOrder ?? PurchaseOrder::find($validated['pc_id']);
+            $poLabel = $po?->pc_number ?? ('#'.$validated['pc_id']);
+            if ($request->user()) {
+                AuditTrailLogger::record(
+                    $request->user(),
+                    $request,
+                    'Receiving / restock '.$receiving->receiving_number.' for PO '.$poLabel.' (qty '.$totalReceived.')',
+                    'receivings',
+                    (int) $receiving->receiving_id,
+                    [
+                        'receiving_number' => $receiving->receiving_number,
+                        'pc_id' => (int) $validated['pc_id'],
+                        'total_quantity_received' => $totalReceived,
+                    ]
+                );
+            }
+
+            return $this->success($receiving, 'Receiving created successfully', 201);
         } catch (ValidationException $e) {
             return $this->validationError($e->errors());
         } catch (\Exception $e) {

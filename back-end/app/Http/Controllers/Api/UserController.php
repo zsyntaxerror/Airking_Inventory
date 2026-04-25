@@ -22,7 +22,7 @@ class UserController extends Controller
 
     public function index(Request $request)
     {
-        $query = User::with(['role', 'status']);
+        $query = User::with(['role', 'status', 'branch']);
 
         // Search
         if ($request->has('search')) {
@@ -38,6 +38,11 @@ class UserController extends Controller
         // Filter by role
         if ($request->has('role_id')) {
             $query->where('role_id', $request->role_id);
+        }
+
+        // Filter by branch
+        if ($request->filled('branch_id')) {
+            $query->where('branch_id', $request->branch_id);
         }
 
         // Filter by status
@@ -73,6 +78,7 @@ class UserController extends Controller
                 ],
                 'phone' => 'nullable|string|max:20',
                 'role_id' => 'required|exists:roles,role_id',
+                'branch_id' => 'nullable|exists:branches,id',
                 'status_id' => 'required|exists:status_lookup,status_id',
                 'assigned_location_ids' => 'nullable|array',
                 'assigned_location_ids.*' => 'integer|exists:locations,location_id',
@@ -81,6 +87,11 @@ class UserController extends Controller
             // Ensure integer IDs (request may send strings)
             $validated['role_id'] = (int) $validated['role_id'];
             $validated['status_id'] = (int) $validated['status_id'];
+            if (array_key_exists('branch_id', $validated) && $validated['branch_id'] !== null && $validated['branch_id'] !== '') {
+                $validated['branch_id'] = (int) $validated['branch_id'];
+            } else {
+                $validated['branch_id'] = null;
+            }
 
             // Hash password
             $validated['password_hash'] = Hash::make($validated['password']);
@@ -91,7 +102,7 @@ class UserController extends Controller
 
             // ✅ USING ApiResponse trait
             return $this->success(
-                $user->load(['role', 'status']),
+                $user->load(['role', 'status', 'branch']),
                 'User created successfully',
                 201
             );
@@ -105,7 +116,7 @@ class UserController extends Controller
 
     public function show(User $user)
     {
-        $user->load(['role', 'status']);
+        $user->load(['role', 'status', 'branch']);
 
         // ✅ USING ApiResponse trait
         return $this->success($user, 'User retrieved successfully');
@@ -128,16 +139,23 @@ class UserController extends Controller
                 'username' => 'sometimes|required|string|unique:users,username,' . $user->user_id . ',user_id|max:50',
                 'phone' => 'nullable|string|max:20',
                 'role_id' => 'sometimes|required|exists:roles,role_id',
+                'branch_id' => 'nullable|exists:branches,id',
                 'status_id' => 'sometimes|required|exists:status_lookup,status_id',
                 'assigned_location_ids' => 'nullable|array',
                 'assigned_location_ids.*' => 'integer|exists:locations,location_id',
             ]);
 
+            if (array_key_exists('branch_id', $validated)) {
+                $validated['branch_id'] = $validated['branch_id'] !== null && $validated['branch_id'] !== ''
+                    ? (int) $validated['branch_id']
+                    : null;
+            }
+
             $user->update($validated);
 
             // ✅ USING ApiResponse trait
             return $this->success(
-                $user->fresh()->load(['role', 'status']),
+                $user->fresh()->load(['role', 'status', 'branch']),
                 'User updated successfully'
             );
 

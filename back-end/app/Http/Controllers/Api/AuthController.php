@@ -16,7 +16,7 @@ use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    private const LOGIN_MAX_ATTEMPTS = 5;
+    private const LOGIN_MAX_ATTEMPTS = 8;
 
     private const LOGIN_DECAY_SECONDS = 900;
 

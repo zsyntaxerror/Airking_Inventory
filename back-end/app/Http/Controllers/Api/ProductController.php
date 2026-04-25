@@ -202,4 +202,51 @@ class ProductController extends Controller
         $product->delete();
         return $this->success(null, 'Product deleted successfully');
     }
+
+    /**
+     * All product primary keys in one query (for client-side filtering / recommendation screens).
+     */
+    public function idList()
+    {
+        $ids = Product::query()->orderBy('product_id')->pluck('product_id')->values();
+
+        return $this->success(['product_ids' => $ids], 'Product IDs retrieved successfully');
+    }
+
+    /**
+     * Load many products by ID in one request (avoids N× GET /products/{id} calls).
+     */
+    public function batchLookup(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'product_ids'   => 'required|array|min:1|max:500',
+                'product_ids.*' => 'integer|exists:products,product_id',
+            ]);
+        } catch (ValidationException $e) {
+            return $this->validationError($e->errors());
+        }
+
+        $ids = array_values(array_unique($validated['product_ids']));
+        $products = Product::with(['category', 'brand', 'model', 'status', 'unit'])
+            ->withSum(['inventories as stock_on_hand_total' => function ($q) {
+            }], 'quantity_on_hand')
+            ->whereIn('product_id', $ids)
+            ->get();
+
+        $byId = $products->keyBy('product_id');
+        $ordered = collect($ids)
+            ->map(fn (int $id) => $byId->get($id))
+            ->filter()
+            ->values();
+
+        $ordered->transform(function (Product $product) {
+            $sum = (int) ($product->stock_on_hand_total ?? 0);
+            $product->setAttribute('quantity', $sum);
+
+            return $product;
+        });
+
+        return $this->success($ordered, 'Products retrieved successfully');
+    }
 }

@@ -31,6 +31,7 @@ use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\BarcodeScanController;
 use App\Http\Controllers\Api\InventoryScanTransactionController;
 use App\Http\Controllers\Api\PendingProductController;
+use App\Http\Controllers\Api\SystemConfigController;
 use App\Http\Controllers\Api\StatusLookupController;
 use App\Http\Controllers\Api\UnitLookupController;
 use App\Http\Controllers\Api\RoleController;
@@ -86,6 +87,8 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
         Route::put('/users/{user}/change-password', [UserController::class, 'changePassword']);
         Route::put('/users/{user}/status', [UserController::class, 'updateStatus']);
         Route::apiResource('users', UserController::class);
+        Route::get('/system-config', [SystemConfigController::class, 'show']);
+        Route::put('/system-config', [SystemConfigController::class, 'update']);
     });
 
     /*
@@ -216,6 +219,8 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     | ERD: PRODUCT (Product table)
     |--------------------------------------------------------------------------
     */
+    Route::get('/products/id-list', [ProductController::class, 'idList']);
+    Route::post('/products/batch-lookup', [ProductController::class, 'batchLookup']);
     Route::get('/products', [ProductController::class, 'index']);
     Route::get('/products/{product}', [ProductController::class, 'show']);
     Route::middleware('role:admin,inventory_analyst')->group(function () {
@@ -227,6 +232,8 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     });
 
     // Legacy alias: /items → products
+    Route::get('/items/id-list', [ProductController::class, 'idList']);
+    Route::post('/items/batch-lookup', [ProductController::class, 'batchLookup']);
     Route::get('/items', [ProductController::class, 'index']);
     Route::get('/items/{product}', [ProductController::class, 'show']);
     Route::middleware('role:admin,inventory_analyst')->group(function () {
@@ -307,10 +314,10 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     Route::middleware('role:admin,inventory_analyst,branch_manager')->group(function () {
         Route::post('/purchase-orders', [PurchaseOrderController::class, 'store']);
     });
-    Route::middleware('role:admin,branch_manager')->group(function () {
-        Route::put('/purchase-orders/{id}', [PurchaseOrderController::class, 'update']);
-    });
     Route::middleware('role:admin')->group(function () {
+        Route::post('/purchase-orders/{id}/approve', [PurchaseOrderController::class, 'approve']);
+        Route::post('/purchase-orders/{id}/reject', [PurchaseOrderController::class, 'reject']);
+        Route::put('/purchase-orders/{id}', [PurchaseOrderController::class, 'update']);
         Route::delete('/purchase-orders/{id}', [PurchaseOrderController::class, 'destroy']);
     });
 
@@ -457,16 +464,21 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
             return $query->paginate($request->get('per_page', 50));
         });
 
-        Route::get('/audit-trail', function () {
-            return \App\Models\AuditTrail::with('user')
+        Route::get('/audit-trail', function (Illuminate\Http\Request $request) {
+            $perPage = min(200, max(1, (int) $request->get('per_page', 50)));
+
+            return \App\Models\AuditTrail::with(['user.role'])
                 ->orderBy('created_at', 'desc')
-                ->paginate(50);
+                ->paginate($perPage);
         });
 
-        Route::get('/audit-trail/user/{userId}', function ($userId) {
-            return \App\Models\AuditTrail::where('user_id', $userId)
+        Route::get('/audit-trail/user/{userId}', function (Illuminate\Http\Request $request, $userId) {
+            $perPage = min(200, max(1, (int) $request->get('per_page', 50)));
+
+            return \App\Models\AuditTrail::with(['user.role'])
+                ->where('user_id', $userId)
                 ->orderBy('created_at', 'desc')
-                ->paginate(50);
+                ->paginate($perPage);
         });
     });
 
@@ -500,6 +512,7 @@ Route::middleware(['auth:sanctum', 'auditor.readonly', 'location.scope'])->group
     Route::middleware('role:admin,branch_manager,warehouse_personnel')->group(function () {
         Route::post('/inventory/scan-barcode', [InventoryController::class, 'scanBarcode']);
         Route::post('/inventory/scan-transaction', [InventoryScanTransactionController::class, 'store']);
+        Route::post('/inventory/scan-transaction-batch', [InventoryScanTransactionController::class, 'batchStore']);
         Route::post('/barcode/scan', [BarcodeScanController::class, 'scanLookup']);
         Route::get('/barcode-scans', [BarcodeScanController::class, 'index']);
         Route::post('/barcode-scans', [BarcodeScanController::class, 'store']);

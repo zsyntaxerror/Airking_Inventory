@@ -9,6 +9,7 @@ use App\Models\ItemSerial;
 use App\Models\Product;
 use App\Models\PurchaseOrderDetail;
 use App\Models\Transfer;
+use App\Support\AuditTrailLogger;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -61,6 +62,58 @@ class InventoryScanTransactionController extends Controller
         } catch (\Throwable $e) {
             return $this->error('Scan transaction failed: '.$e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Process multiple scan-transaction payloads in one HTTP request (single round-trip).
+     * Each entry is validated and executed like POST /inventory/scan-transaction.
+     */
+    public function batchStore(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'transactions'                    => 'required|array|min:1|max:50',
+                'transactions.*.barcode'          => 'required|string|max:191',
+                'transactions.*.transaction_type' => 'required|string|in:receiving,transfer,audit,issuance',
+                'transactions.*.location_id'      => 'nullable|exists:locations,location_id',
+                'transactions.*.from_location_id' => 'nullable|exists:locations,location_id',
+                'transactions.*.to_location_id'   => 'nullable|exists:locations,location_id',
+                'transactions.*.quantity'         => 'nullable|integer|min:1',
+                'transactions.*.po_id'            => 'nullable|exists:purchase_orders,po_id',
+            ]);
+        } catch (ValidationException $e) {
+            return $this->validationError($e->errors());
+        }
+
+        $results = [];
+        foreach ($validated['transactions'] as $idx => $row) {
+            $sub = Request::create('/inventory/scan-transaction', 'POST', $row);
+            $sub->headers->set('Accept', 'application/json');
+            if ($auth = $request->header('Authorization')) {
+                $sub->headers->set('Authorization', $auth);
+            }
+            $sub->setUserResolver($request->getUserResolver());
+
+            try {
+                $response = $this->store($sub);
+                $decoded = json_decode($response->getContent(), true);
+                $results[] = [
+                    'index'   => $idx,
+                    'status'  => $response->getStatusCode(),
+                    'success' => is_array($decoded) && ($decoded['success'] ?? false) === true,
+                    'data'    => $decoded,
+                ];
+            } catch (\Throwable $e) {
+                $results[] = [
+                    'index'   => $idx,
+                    'status'  => 500,
+                    'success' => false,
+                    'error'   => $e->getMessage(),
+                ];
+            }
+        }
+
+        return $this->success(['results' => $results], 'Batch scan transactions processed');
     }
 
     private function resolveProductByBarcode(string $raw): ?Product
@@ -173,6 +226,22 @@ class InventoryScanTransactionController extends Controller
             Product::syncQuantityFromInventory((int) $product->product_id);
 
             $fresh = $product->fresh()->load(['category', 'brand', 'model', 'unit', 'status']);
+
+            $actor = $request->user();
+            if ($actor) {
+                $label = $fresh->product_code ?: $fresh->barcode ?: ('#'.$fresh->product_id);
+                AuditTrailLogger::record(
+                    $actor,
+                    $request,
+                    'Receiving scan: '.$label.' +'.$quantity,
+                    'inventory',
+                    (int) $fresh->product_id,
+                    array_filter([
+                        'location_id' => $locationId,
+                        'po_id' => ! empty($validated['po_id']) ? (int) $validated['po_id'] : null,
+                    ])
+                );
+            }
 
             return $this->success([
                 'action'    => 'applied',
@@ -287,6 +356,19 @@ class InventoryScanTransactionController extends Controller
 
             $fresh = $product->fresh()->load(['category', 'brand', 'model', 'unit', 'status']);
 
+            $actor = $request->user();
+            if ($actor) {
+                $label = $fresh->product_code ?: $fresh->barcode ?: ('#'.$fresh->product_id);
+                AuditTrailLogger::record(
+                    $actor,
+                    $request,
+                    'Transfer scan: '.$label.' ×'.$quantity.' '.$transferNumber,
+                    'transfers',
+                    (int) $transfer->transfer_id,
+                    ['from_location_id' => $fromLocationId, 'to_location_id' => $toLocationId]
+                );
+            }
+
             return $this->success([
                 'action'    => 'applied',
                 'product'   => $fresh,
@@ -327,6 +409,15 @@ class InventoryScanTransactionController extends Controller
                 'module'        => 'inventory_operation',
                 'description'   => sprintf('Audit scan barcode=%s product_id=%s location_id=%s stock=%s', $barcode, $product->product_id, $locationId ?: '—', $stock),
             ]);
+            $label = $product->product_code ?: $product->barcode ?: ('#'.$product->product_id);
+            AuditTrailLogger::record(
+                $request->user(),
+                $request,
+                'Audit scan: '.$label.' @loc '.$locationId.' stock '.$stock,
+                'inventory',
+                (int) $product->product_id,
+                ['location_id' => $locationId, 'stock_on_hand' => $stock]
+            );
         }
 
         $fresh = $product->fresh()->load(['category', 'brand', 'model', 'unit', 'status']);
@@ -388,6 +479,19 @@ class InventoryScanTransactionController extends Controller
             Product::syncQuantityFromInventory((int) $product->product_id);
 
             $fresh = $product->fresh()->load(['category', 'brand', 'model', 'unit', 'status']);
+
+            $actor = $request->user();
+            if ($actor) {
+                $label = $fresh->product_code ?: $fresh->barcode ?: ('#'.$fresh->product_id);
+                AuditTrailLogger::record(
+                    $actor,
+                    $request,
+                    'Issuance scan: '.$label.' -'.$quantity,
+                    'inventory',
+                    (int) $fresh->product_id,
+                    ['location_id' => $locationId]
+                );
+            }
 
             return $this->success([
                 'action'    => 'applied',

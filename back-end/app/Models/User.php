@@ -35,6 +35,7 @@ class User extends Authenticatable
         'password_hash',
         'phone',
         'role_id',
+        'branch_id',
         'status_id',
         'assigned_location_ids',
     ];
@@ -69,6 +70,14 @@ class User extends Authenticatable
     public function role(): BelongsTo
     {
         return $this->belongsTo(Role::class, 'role_id', 'role_id');
+    }
+
+    /**
+     * Branch assignment for scoping (User Management).
+     */
+    public function branch(): BelongsTo
+    {
+        return $this->belongsTo(Branch::class, 'branch_id');
     }
 
     /**
