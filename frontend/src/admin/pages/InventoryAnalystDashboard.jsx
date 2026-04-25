@@ -82,7 +82,7 @@ const InventoryAnalystDashboard = () => {
   const stats = dashData?.stats ?? {};
   const invByCategory = dashData?.inventory_by_category ?? { labels: [], values: [] };
   const stockTrends = dashData?.stock_trends ?? { labels: [], values: [] };
-  const branchDist = dashData?.branch_distribution ?? { labels: [], values: [] };
+  // NOTE: branch_distribution is currently not rendered on this dashboard variant.
 
   // Compute low-stock items from inventory list
   const lowStockItems = invData.filter(i => {

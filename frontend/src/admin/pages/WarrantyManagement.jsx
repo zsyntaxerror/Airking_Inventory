@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import AdminLayout from '../components/AdminLayout';
 import Modal from '../components/Modal';
-import { warrantyClaimsAPI, locationsAPI } from '../services/api';
+import { warrantyClaimsAPI } from '../services/api';
 import { toast } from '../utils/toast';
 import '../styles/dashboard_air.css';
 import '../styles/warranty_management.css';
 
 const WarrantyManagement = () => {
   const [claims, setClaims] = useState([]);
-  const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -23,19 +22,11 @@ const WarrantyManagement = () => {
   const debounceRef = useRef(null);
 
   const [serialInput, setSerialInput] = useState('');
-  const [serialVerified, setSerialVerified] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
 
   const [formData, setFormData] = useState({
     customer_name: '', customer_contact: '', item_name: '', serial_number: '', issue: '', branch: '', priority: 'MEDIUM', status: 'Open', technician: '', estimated_date: '', purchase_date: ''
   });
-
-  // Load locations once for dropdown
-  useEffect(() => {
-    locationsAPI.getAll({ per_page: 200 }).then(res => {
-      setBranches(Array.isArray(res?.data) ? res.data : []);
-    }).catch(() => {});
-  }, []);
 
   const fetchClaims = useCallback(async (page = 1) => {
     try {
@@ -86,10 +77,8 @@ const WarrantyManagement = () => {
       } else {
         setFormData(prev => ({ ...prev, serial_number: serialInput.trim() }));
       }
-      setSerialVerified(true);
     } catch {
       setFormData(prev => ({ ...prev, serial_number: serialInput.trim() }));
-      setSerialVerified(true);
     } finally {
       setVerifyLoading(false);
     }
@@ -98,7 +87,6 @@ const WarrantyManagement = () => {
   const handleAdd = () => {
     setEditingClaim(null);
     setSerialInput('');
-    setSerialVerified(false);
     setFormData({ customer_name: '', customer_contact: '', item_name: '', serial_number: '', issue: '', branch: '', priority: 'MEDIUM', status: 'Open', technician: '', estimated_date: '', purchase_date: '' });
     setIsModalOpen(true);
   };
@@ -538,7 +526,6 @@ const WarrantyManagement = () => {
                       setFormData({...formData, serial_number: e.target.value});
                     } else {
                       setSerialInput(e.target.value);
-                      setSerialVerified(false);
                     }
                   }}
                 />

@@ -518,8 +518,8 @@ const PurchaseOrderDraftCreator = () => {
       setSubmitting(false);
     }
   }, [
-    lineItems, selectedSupplierId, poDate, paymentTerms, selectedBranch, loadingBranches,
-    referenceNo, itemsSubtotal, appliedVat, totalEstimatedValue, selectedSupplierName, branches,
+    lineItems, selectedSupplierId, poDate, selectedBranch, loadingBranches,
+    referenceNo, totalEstimatedValue, selectedSupplierName, branches,
     expectedDeliveryDate,
   ]);
 

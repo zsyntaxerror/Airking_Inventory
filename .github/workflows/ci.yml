@@ -58,5 +58,5 @@ jobs:
           sed -i 's/^[[:space:]]*DB_DATABASE=.*/DB_DATABASE=database\/database.sqlite/' .env
           php artisan key:generate --force
           touch database/database.sqlite
-      - run: php artisan migrate --force --no-interaction
+      - run: php artisan migrate:fresh --force --no-interaction
       - run: php artisan test

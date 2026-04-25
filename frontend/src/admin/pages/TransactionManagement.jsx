@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import AdminLayout from '../components/AdminLayout';
 import { receivingsAPI, issuancesAPI, transfersAPI, adjustmentsAPI } from '../services/api';
 import '../styles/dashboard_air.css';
@@ -14,7 +14,7 @@ const TransactionManagement = () => {
   const [locationFilter, setLocationFilter] = useState('');
   const [locations, setLocations] = useState([]);
 
-  const normalizeStatus = (status) => {
+  const normalizeStatus = useCallback((status) => {
     if (status != null && typeof status === 'object') {
       const name = status.status_name ?? status.name ?? status.label;
       if (name != null && name !== '') return normalizeStatus(name);
@@ -25,7 +25,7 @@ const TransactionManagement = () => {
     if (value.includes('complete') || value.includes('received') || value.includes('done')) return 'Completed';
     if (value.includes('cancel') || value.includes('reject') || value.includes('deny') || value.includes('void')) return 'Cancelled';
     return 'Pending';
-  };
+  }, []);
 
   const formatDateTime = (value) => {
     if (!value) return 'N/A';
@@ -40,7 +40,7 @@ const TransactionManagement = () => {
     });
   };
 
-  const mapReceiving = (row) => {
+  const mapReceiving = useCallback((row) => {
     const details = Array.isArray(row.details) ? row.details : [];
     const qtyFromLines = details.reduce((sum, d) => sum + Number(d.quantity_amount ?? 0), 0);
     const qty = Number(row.total_quantity_received ?? 0) || qtyFromLines;
@@ -78,9 +78,9 @@ const TransactionManagement = () => {
       status,
       occurredAt: row.received_at || row.receiving_date || row.transaction_date || row.created_at,
     };
-  };
+  }, [normalizeStatus]);
 
-  const mapIssuance = (row) => {
+  const mapIssuance = useCallback((row) => {
     const details = Array.isArray(row.details) ? row.details : [];
     const qtyFromLines = details.reduce((sum, d) => sum + Number(d.quantity_issued ?? 0), 0);
     const qty = Number(row.total_quantity ?? row.quantity ?? row.issued_qty ?? row.qty ?? 0) || qtyFromLines;
@@ -111,9 +111,9 @@ const TransactionManagement = () => {
       status: normalizeStatus(row.status?.status_name ?? row.status ?? row.issuance_status),
       occurredAt: row.issued_at || row.issuance_date || row.transaction_date || row.created_at,
     };
-  };
+  }, [normalizeStatus]);
 
-  const mapTransfer = (row) => {
+  const mapTransfer = useCallback((row) => {
     const details = Array.isArray(row.details) ? row.details : [];
     const qtyFromLines = details.reduce((sum, d) => sum + Number(d.quantity_transferred ?? d.quantity ?? 0), 0);
     const qty = Number(row.total_quantity_transferred ?? row.quantity ?? row.transfer_qty ?? row.qty ?? 0) || qtyFromLines;
@@ -145,9 +145,9 @@ const TransactionManagement = () => {
       status: normalizeStatus(row.status?.status_name ?? row.status ?? row.transfer_status),
       occurredAt: row.transfer_date || row.transaction_date || row.created_at,
     };
-  };
+  }, [normalizeStatus]);
 
-  const mapAdjustment = (row) => {
+  const mapAdjustment = useCallback((row) => {
     const qty = Number(row.quantity ?? row.adjusted_qty ?? row.qty ?? 0);
     const unitPrice = Number(row.unit_cost ?? row.unit_price ?? row.cost_price ?? 0);
     const total = Number(row.total_amount ?? row.total ?? Math.abs(qty) * unitPrice ?? 0);
@@ -164,7 +164,7 @@ const TransactionManagement = () => {
       status: normalizeStatus(row.status || row.adjustment_status),
       occurredAt: row.adjustment_date || row.transaction_date || row.created_at,
     };
-  };
+  }, [normalizeStatus]);
 
   useEffect(() => {
     const fetchAllTransactions = async () => {
@@ -208,7 +208,7 @@ const TransactionManagement = () => {
       }
     };
     fetchAllTransactions();
-  }, []);
+  }, [mapAdjustment, mapIssuance, mapReceiving, mapTransfer]);
 
   const getStatusClass = (status) => {
     if (status === 'Completed') return 'txn-status-completed';

@@ -122,12 +122,6 @@ const PurchaseReturnManagement = () => {
     return sum + (parseFloat(d.quantity_returned) || 0) * (parseFloat(d.unit_cost) || 0);
   }, 0);
 
-  const now = new Date();
-  const thisMonth = returns.filter(r => {
-    if (!r.return_date) return false;
-    const d = new Date(r.return_date);
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  });
   const totalValue = returns.reduce((s, r) => s + parseFloat(r.total_amount || 0), 0);
 
   const renderPages = () => {

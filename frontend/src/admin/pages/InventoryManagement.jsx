@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import AdminLayout from '../components/AdminLayout';
 import Modal from '../components/Modal';
-import { inventoryAPI, locationsAPI, categoriesAPI, batchAPI } from '../services/api';
+import { inventoryAPI } from '../services/api';
 import '../styles/dashboard_air.css';
 import '../styles/inventory_management.css';
 
 const InventoryManagement = () => {
   const [inventory, setInventory] = useState([]);
-  const [warehouses, setWarehouses] = useState([]);
-  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -18,32 +16,6 @@ const InventoryManagement = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const rowsPerPage = 10;
   const debounceRef = useRef(null);
-
-  useEffect(() => {
-    const fetchLookups = async () => {
-      try {
-        // Use batch API to fetch locations and categories in a single request
-        const batchRes = await batchAPI.get({ include: ['locations', 'categories'] });
-        const batchData = batchRes?.data || {};
-        setWarehouses(Array.isArray(batchData.locations?.data) ? batchData.locations.data : []);
-        setCategories(Array.isArray(batchData.categories?.data) ? batchData.categories.data : []);
-      } catch (err) {
-        console.error('Batch fetch failed, falling back to individual requests:', err);
-        // Fallback to individual requests
-        try {
-          const [whRes, catRes] = await Promise.all([
-            locationsAPI.getAll({ per_page: 200 }),
-            categoriesAPI.getAll(),
-          ]);
-          setWarehouses(Array.isArray(whRes.data) ? whRes.data : []);
-          setCategories(Array.isArray(catRes?.data) ? catRes.data : []);
-        } catch (fallbackErr) {
-          console.error('Fallback fetch also failed:', fallbackErr);
-        }
-      }
-    };
-    fetchLookups();
-  }, []);
 
   const fetchInventory = useCallback(async (page = 1) => {
     try {

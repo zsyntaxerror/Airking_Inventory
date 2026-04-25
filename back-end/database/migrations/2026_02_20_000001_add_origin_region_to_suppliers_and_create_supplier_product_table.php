@@ -8,69 +8,138 @@ return new class extends Migration
 {
     public function up(): void
     {
-        // The ERD migration created suppliers with only id/timestamps.
-        // Add all business columns now, including origin (Local|International) and region.
-        Schema::table('suppliers', function (Blueprint $table) {
-            $table->string('supplier_name', 255)->after('id');
-            $table->string('contact_person', 255)->nullable()->after('supplier_name');
-            $table->string('contact_number', 20)->nullable()->after('contact_person');
-            $table->string('email', 100)->nullable()->after('contact_number');
-            $table->text('address')->nullable()->after('email');
-            // Origin classifies the supplier as Local (Philippines) or International
-            $table->string('origin', 20)->default('Local')->after('address');
-            // Region is a controlled dropdown derived from the selected origin
-            $table->string('region', 100)->nullable()->after('origin');
-            $table->string('tin', 50)->nullable()->after('region');
-            $table->unsignedBigInteger('status_id')->nullable()->after('tin');
-            $table->text('notes')->nullable()->after('status_id');
-            $table->softDeletes();
+        if (Schema::hasTable('suppliers')) {
+            // The ERD migration created suppliers with only id/timestamps.
+            // Add missing business columns only if they do not exist yet.
+            $hasSupplierName = Schema::hasColumn('suppliers', 'supplier_name');
+            $hasContactPerson = Schema::hasColumn('suppliers', 'contact_person');
+            $hasContactNumber = Schema::hasColumn('suppliers', 'contact_number');
+            $hasEmail = Schema::hasColumn('suppliers', 'email');
+            $hasAddress = Schema::hasColumn('suppliers', 'address');
+            $hasOrigin = Schema::hasColumn('suppliers', 'origin');
+            $hasRegion = Schema::hasColumn('suppliers', 'region');
+            $hasTin = Schema::hasColumn('suppliers', 'tin');
+            $hasStatusId = Schema::hasColumn('suppliers', 'status_id');
+            $hasNotes = Schema::hasColumn('suppliers', 'notes');
+            $hasDeletedAt = Schema::hasColumn('suppliers', 'deleted_at');
 
-            $table->foreign('status_id')
-                ->references('status_id')
-                ->on('status_lookup')
-                ->onDelete('set null');
-        });
+            if (
+                ! $hasSupplierName || ! $hasContactPerson || ! $hasContactNumber || ! $hasEmail ||
+                ! $hasAddress || ! $hasOrigin || ! $hasRegion || ! $hasTin || ! $hasStatusId ||
+                ! $hasNotes || ! $hasDeletedAt
+            ) {
+                Schema::table('suppliers', function (Blueprint $table) use (
+                    $hasSupplierName,
+                    $hasContactPerson,
+                    $hasContactNumber,
+                    $hasEmail,
+                    $hasAddress,
+                    $hasOrigin,
+                    $hasRegion,
+                    $hasTin,
+                    $hasStatusId,
+                    $hasNotes,
+                    $hasDeletedAt
+                ) {
+                    if (! $hasSupplierName) $table->string('supplier_name', 255)->nullable()->after('id');
+                    if (! $hasContactPerson) $table->string('contact_person', 255)->nullable();
+                    if (! $hasContactNumber) $table->string('contact_number', 20)->nullable();
+                    if (! $hasEmail) $table->string('email', 100)->nullable();
+                    if (! $hasAddress) $table->text('address')->nullable();
+                    // Origin classifies the supplier as Local (Philippines) or International
+                    if (! $hasOrigin) $table->string('origin', 20)->default('Local');
+                    // Region is a controlled dropdown derived from the selected origin
+                    if (! $hasRegion) $table->string('region', 100)->nullable();
+                    if (! $hasTin) $table->string('tin', 50)->nullable();
+                    if (! $hasStatusId) $table->unsignedBigInteger('status_id')->nullable();
+                    if (! $hasNotes) $table->text('notes')->nullable();
+                    if (! $hasDeletedAt) $table->softDeletes();
+                });
+            }
+
+            // Add FK only if status_id exists; swallow duplicate-FK reruns in CI.
+            if (Schema::hasColumn('suppliers', 'status_id')) {
+                try {
+                    Schema::table('suppliers', function (Blueprint $table) {
+                        $table->foreign('status_id')
+                            ->references('status_id')
+                            ->on('status_lookup')
+                            ->onDelete('set null');
+                    });
+                } catch (\Throwable $e) {
+                    // Already exists / duplicate key name on re-run: ignore to keep migration idempotent.
+                }
+            }
+        }
 
         // Junction table: many-to-many between suppliers and products
-        Schema::create('supplier_product', function (Blueprint $table) {
-            $table->id('supplier_prod_id');
-            $table->unsignedBigInteger('supplier_id');
-            $table->unsignedBigInteger('product_id');
-            $table->decimal('product_price', 10, 2)->nullable();
-            $table->string('currency', 10)->default('PHP');
-            $table->unsignedBigInteger('status_id')->nullable();
-            $table->timestamps();
+        if (! Schema::hasTable('supplier_product')) {
+            Schema::create('supplier_product', function (Blueprint $table) {
+                $table->id('supplier_prod_id');
+                $table->unsignedBigInteger('supplier_id');
+                $table->unsignedBigInteger('product_id');
+                $table->decimal('product_price', 10, 2)->nullable();
+                $table->string('currency', 10)->default('PHP');
+                $table->unsignedBigInteger('status_id')->nullable();
+                $table->timestamps();
 
-            // suppliers PK is 'id' (auto-generated by the ERD migration)
-            $table->foreign('supplier_id')
-                ->references('id')
-                ->on('suppliers')
-                ->onDelete('cascade');
+                // suppliers PK is 'id' (auto-generated by the ERD migration)
+                $table->foreign('supplier_id')
+                    ->references('id')
+                    ->on('suppliers')
+                    ->onDelete('cascade');
 
-            $table->foreign('product_id')
-                ->references('product_id')
-                ->on('products')
-                ->onDelete('cascade');
+                $table->foreign('product_id')
+                    ->references('product_id')
+                    ->on('products')
+                    ->onDelete('cascade');
 
-            $table->foreign('status_id')
-                ->references('status_id')
-                ->on('status_lookup')
-                ->onDelete('set null');
+                $table->foreign('status_id')
+                    ->references('status_id')
+                    ->on('status_lookup')
+                    ->onDelete('set null');
 
-            $table->unique(['supplier_id', 'product_id']);
-        });
+                $table->unique(['supplier_id', 'product_id']);
+            });
+        }
     }
 
     public function down(): void
     {
         Schema::dropIfExists('supplier_product');
 
-        Schema::table('suppliers', function (Blueprint $table) {
-            $table->dropForeign(['status_id']);
-            $table->dropColumn([
-                'supplier_name', 'contact_person', 'contact_number', 'email',
-                'address', 'origin', 'region', 'tin', 'status_id', 'notes', 'deleted_at',
-            ]);
-        });
+        if (! Schema::hasTable('suppliers')) {
+            return;
+        }
+
+        if (Schema::hasColumn('suppliers', 'status_id')) {
+            try {
+                Schema::table('suppliers', function (Blueprint $table) {
+                    $table->dropForeign(['status_id']);
+                });
+            } catch (\Throwable $e) {
+                // Ignore if FK is already absent.
+            }
+        }
+
+        $dropCols = array_values(array_filter([
+            Schema::hasColumn('suppliers', 'supplier_name') ? 'supplier_name' : null,
+            Schema::hasColumn('suppliers', 'contact_person') ? 'contact_person' : null,
+            Schema::hasColumn('suppliers', 'contact_number') ? 'contact_number' : null,
+            Schema::hasColumn('suppliers', 'email') ? 'email' : null,
+            Schema::hasColumn('suppliers', 'address') ? 'address' : null,
+            Schema::hasColumn('suppliers', 'origin') ? 'origin' : null,
+            Schema::hasColumn('suppliers', 'region') ? 'region' : null,
+            Schema::hasColumn('suppliers', 'tin') ? 'tin' : null,
+            Schema::hasColumn('suppliers', 'status_id') ? 'status_id' : null,
+            Schema::hasColumn('suppliers', 'notes') ? 'notes' : null,
+            Schema::hasColumn('suppliers', 'deleted_at') ? 'deleted_at' : null,
+        ]));
+
+        if ($dropCols !== []) {
+            Schema::table('suppliers', function (Blueprint $table) use ($dropCols) {
+                $table->dropColumn($dropCols);
+            });
+        }
     }
 };
